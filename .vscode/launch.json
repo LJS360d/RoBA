@@ -1,0 +1,18 @@
+// .vscode/launch.json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Go (Debug)",
+      "type": "go",
+      "request": "launch",
+      "program": "${workspaceFolder}",
+      "env": {},
+      "args": [
+        "test/emerald.gba",
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}
