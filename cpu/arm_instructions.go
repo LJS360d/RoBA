@@ -2,7 +2,7 @@ package cpu
 
 // Base structure for all ARM instructions
 type ARMInstruction struct {
-	Cond ArmCondition // Condition field (4 bits) bits 31-28
+	Cond ARMCondition // Condition field (4 bits) bits 31-28
 }
 
 // Data Processing Instruction Structure
@@ -14,7 +14,7 @@ type ARMDataProcessingInstruction struct {
 	// bit 25, Immediate 2nd Operand Flag (0=Register, 1=Immediate)
 	I bool
 	// bits 24-21, Operation Code (4 bits)
-	Opcode uint32
+	Opcode ARMDataProcessingOperation
 	// bit 20, Set Condition Codes (1 bit)
 	S bool
 	// bits 19-16, First operand register (4 bits)
@@ -22,7 +22,7 @@ type ARMDataProcessingInstruction struct {
 	// bits 15-12, Destination register (4 bits)
 	Rd uint32
 	// bits 6-5, Shift type (2 bits), (0=LSL, 1=LSR, 2=ASR, 3=ROR)
-	ShiftType uint32
+	ShiftType ARMShiftType
 	// bit 4, Shift by Register Flag (0=Immediate, 1=Register)
 	R bool
 	// when I == 0 & R == 0 -> Register as 2nd Operand takes bits (11-7)
@@ -72,7 +72,7 @@ type ARMControlInstruction struct {
 // ParseInstruction parses a 32-bit instruction and returns the appropriate struct.
 func ParseInstruction_Arm(instruction uint32) interface{} {
 	// Extract the condition (bits 28-31)
-	cond := ArmCondition((instruction >> 28) & 0x0F)
+	cond := ARMCondition((instruction >> 28) & 0x0F)
 
 	// Check the opcode type (bits 26-27)
 	switch (instruction >> 26) & 0x03 { // 2 bits
@@ -105,11 +105,11 @@ func ParseInstruction_Arm(instruction uint32) interface{} {
 		return ARMDataProcessingInstruction{
 			ARMInstruction: ARMInstruction{Cond: cond},
 			I:              I != 0, // Convert to bool
-			Opcode:         (instruction >> 21) & 0x0F,
+			Opcode:         ARMDataProcessingOperation((instruction >> 21) & 0x0F),
 			S:              S != 0, // Convert to bool
 			Rn:             Rn,
 			Rd:             Rd,
-			ShiftType:      ShiftType,
+			ShiftType:      ARMShiftType(ShiftType),
 			R:              R != 0, // Convert to bool
 			Is:             Is,
 			Rs:             Rs,
@@ -142,10 +142,10 @@ func ParseInstruction_Arm(instruction uint32) interface{} {
 	}
 }
 
-type ArmCondition uint32
+type ARMCondition uint32
 
 const (
-	Always ArmCondition = iota
+	Always ARMCondition = iota
 	Equal
 	NotEqual
 	CarrySet
@@ -161,4 +161,36 @@ const (
 	SignedHigher
 	SignedLowerOrSame
 	Always2
+)
+
+type ARMDataProcessingOperation uint32
+
+// ARM Data Processing OpCodes
+const (
+	AND ARMDataProcessingOperation = iota
+	EOR
+	SUB
+	RSB
+	ADD
+	ADC
+	SBC
+	RSC
+	TST
+	TEQ
+	CMP
+	CMN
+	ORR
+	MOV
+	BIC
+	MVN
+)
+
+// ARM Shift Type
+type ARMShiftType uint32
+
+const (
+	LSL ARMShiftType = iota
+	LSR
+	ASR
+	ROR
 )
