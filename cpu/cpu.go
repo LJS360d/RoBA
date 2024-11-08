@@ -158,21 +158,33 @@ func (c *CPU) Execute_Arm(instruction uint32) {
 		case EOR:
 			c.ExecEor_Arm(inst)
 		case SUB:
+			c.ExecSub_Arm(inst)
 		case RSB:
+			c.ExecRsb_Arm(inst)
 		case ADD:
+			c.ExecAdd_Arm(inst)
 		case ADC:
+			c.ExecAdc_Arm(inst)
 		case SBC:
+			c.ExecSbc_Arm(inst)
 		case RSC:
+			c.ExecRsc_Arm(inst)
 		case TST:
+			c.ExecTst_Arm(inst)
 		case TEQ:
+			c.ExecTeq_Arm(inst)
 		case CMP:
+			c.ExecCmp_Arm(inst)
 		case CMN:
+			c.ExecCmn_Arm(inst)
 		case ORR:
 			c.ExecOrr_Arm(inst)
 		case MOV:
+			c.ExecMov_Arm(inst)
 		case BIC:
+			c.ExecBic_Arm(inst)
 		case MVN:
-
+			c.ExecMvn_Arm(inst)
 		}
 
 	case ARMLoadStoreInstruction:
@@ -209,36 +221,192 @@ func (c *CPU) ExecAdd_Thumb(instruction uint32) {
 // #############################
 
 // Execute ADD instruction
-func (c *CPU) ExecAdd_Arm(instruction uint32) {
-	rn := (instruction >> 16) & 0x0F
-	rm := (instruction >> 0) & 0x0F
-	rs := (instruction >> 8) & 0x0F
+func (c *CPU) ExecAdd_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
 
-	result := c.Registers[rm] + c.Registers[rs]
-	c.Registers[rn] = result // Store result in Rn
-	fmt.Printf("ARM ADD R%d, R%d, R%d: Result = %d\n", rn, rm, rs, result)
+	// Handle the shift operation for the second operand (Rm)
+	op2, carryOut := c.calcOp2(instruction)
+
+	// Perform the operation between Rn and operand2
+	result := c.Registers[rn] + op2
+
+	// Store result in the destination register (Rd)
+	c.Registers[instruction.Rd] = result
+
+	// Set flags if the instruction specifies (S = true)
+	if instruction.S {
+		c.setFlags(result, carryOut, instruction)
+	}
+
+	fmt.Printf("ARM ADD R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
+}
+
+// Execute ADC instruction
+func (c *CPU) ExecAdc_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
+
+	// Handle the shift operation for the second operand (Rm)
+	op2, carryOut := c.calcOp2(instruction)
+
+	// Perform the operation between Rn and operand2
+	// TODO get cy (carry) from prev
+	cy := uint32(0)
+	result := c.Registers[rn] + op2 + cy
+
+	// Store result in the destination register (Rd)
+	c.Registers[instruction.Rd] = result
+
+	// Set flags if the instruction specifies (S = true)
+	if instruction.S {
+		c.setFlags(result, carryOut, instruction)
+	}
+
+	fmt.Printf("ARM ADC (Add with Carry) R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
+}
+
+// Execute SBC instruction
+func (c *CPU) ExecSbc_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
+
+	// Handle the shift operation for the second operand (Rm)
+	op2, carryOut := c.calcOp2(instruction)
+	// TODO get cy (carry) from prev
+	cy := uint32(0)
+	// Perform the operation between Rn and operand2
+	result := c.Registers[rn] - op2 + cy - 1
+
+	// Store result in the destination register (Rd)
+	c.Registers[instruction.Rd] = result
+
+	// Set flags if the instruction specifies (S = true)
+	if instruction.S {
+		c.setFlags(result, carryOut, instruction)
+	}
+
+	fmt.Printf("ARM SBC (Subtract with Carry) R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
+}
+
+// Execute RSC instruction
+func (c *CPU) ExecRsc_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
+
+	// Handle the shift operation for the second operand (Rm)
+	op2, carryOut := c.calcOp2(instruction)
+	// TODO get cy (carry) from prev
+	cy := uint32(0)
+	// Perform the operation between Rn and operand2
+	result := op2 - c.Registers[rn] + cy - 1
+
+	// Store result in the destination register (Rd)
+	c.Registers[instruction.Rd] = result
+
+	// Set flags if the instruction specifies (S = true)
+	if instruction.S {
+		c.setFlags(result, carryOut, instruction)
+	}
+
+	fmt.Printf("ARM RSC (Reversed Subtract with Carry) R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
+}
+
+// Execute TST instruction
+func (c *CPU) ExecTst_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
+
+	// Handle the shift operation for the second operand (Rm)
+	op2, _ := c.calcOp2(instruction)
+	// Perform the operation between Rn and operand2
+	_ = c.Registers[rn] & op2
+
+	fmt.Printf("ARM TST R%d, R%d, Operand2: %d", rn, rm, op2)
+}
+
+// Execute TEQ instruction
+func (c *CPU) ExecTeq_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
+
+	// Handle the shift operation for the second operand (Rm)
+	op2, _ := c.calcOp2(instruction)
+	// Perform the XOR operation between Rn and operand2
+	_ = c.Registers[rn] ^ op2
+
+	fmt.Printf("ARM TEQ R%d, R%d, Operand2: %d", rn, rm, op2)
+}
+
+// Execute CMP instruction
+func (c *CPU) ExecCmp_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
+
+	// Handle the shift operation for the second operand (Rm)
+	op2, _ := c.calcOp2(instruction)
+	// Perform the operation between Rn and operand2
+	_ = c.Registers[rn] - op2
+
+	fmt.Printf("ARM CMP R%d, R%d, Operand2: %d", rn, rm, op2)
+}
+
+// Execute CMN instruction
+func (c *CPU) ExecCmn_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
+
+	// Handle the shift operation for the second operand (Rm)
+	op2, _ := c.calcOp2(instruction)
+	// Perform the operation between Rn and operand2
+	_ = c.Registers[rn] + op2
+
+	fmt.Printf("ARM CMN R%d, R%d, Operand2: %d", rn, rm, op2)
 }
 
 // Execute SUB instruction
-func (c *CPU) ExecSub_Arm(instruction uint32) {
-	rn := (instruction >> 16) & 0x0F
-	rm := (instruction >> 0) & 0x0F
-	rs := (instruction >> 8) & 0x0F
+func (c *CPU) ExecSub_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
 
-	result := c.Registers[rn] - c.Registers[rs]
-	c.Registers[rm] = result // Store result in Rm
-	fmt.Printf("ARM SUB R%d, R%d, R%d: Result = %d\n", rm, rn, rs, result)
+	// Handle the shift operation for the second operand (Rm)
+	op2, carryOut := c.calcOp2(instruction)
+
+	// TODO dbchk
+	// Perform the operation between Rn and operand2
+	result := c.Registers[rn] - op2
+
+	// Store result in the destination register (Rd)
+	c.Registers[instruction.Rd] = result
+
+	// Set flags if the instruction specifies (S = true)
+	if instruction.S {
+		c.setFlags(result, carryOut, instruction)
+	}
+
+	fmt.Printf("ARM SUB R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
-// Execute MUL instruction
-func (c *CPU) ExecMul_Arm(instruction uint32) {
-	rn := (instruction >> 16) & 0x0F
-	rm := (instruction >> 0) & 0x0F
-	rs := (instruction >> 8) & 0x0F
+// Execute RSB instruction
+func (c *CPU) ExecRsb_Arm(instruction ARMDataProcessingInstruction) {
+	rn := instruction.Rn
+	rm := instruction.Rm
 
-	result := c.Registers[rm] * c.Registers[rs]
-	c.Registers[rn] = result // Store result in Rn
-	fmt.Printf("ARM MUL R%d, R%d, R%d: Result = %d\n", rn, rm, rs, result)
+	// Handle the shift operation for the second operand (Rm)
+	op2, carryOut := c.calcOp2(instruction)
+
+	// Perform the operation between Rn and operand2
+	result := op2 - c.Registers[rn]
+
+	// Store result in the destination register (Rd)
+	c.Registers[instruction.Rd] = result
+
+	// Set flags if the instruction specifies (S = true)
+	if instruction.S {
+		c.setFlags(result, carryOut, instruction)
+	}
+
+	fmt.Printf("ARM RSB (Reverse Sub) R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
 func (c *CPU) ExecAnd_Arm(instruction ARMDataProcessingInstruction) {
@@ -281,6 +449,60 @@ func (c *CPU) ExecOrr_Arm(instruction ARMDataProcessingInstruction) {
 		c.setFlags(result, carryOut, instruction)
 	}
 	fmt.Printf("ARM ORR R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
+}
+
+// Execute MOV instruction
+func (c *CPU) ExecMov_Arm(instruction ARMDataProcessingInstruction) {
+	// Handle the shift operation for the second operand (Rm)
+	op2, carryOut := c.calcOp2(instruction)
+
+	// Perform the operation
+	result := op2
+
+	// Store result in the destination register (Rd)
+	c.Registers[instruction.Rd] = result
+
+	// Set flags if the instruction specifies (S = true)
+	if instruction.S {
+		c.setFlags(result, carryOut, instruction)
+	}
+	fmt.Printf("ARM MOV Operand2: %d, Result = %d\n", op2, result)
+}
+
+// Execute BIC instruction
+func (c *CPU) ExecBic_Arm(instruction ARMDataProcessingInstruction) {
+	// Handle the shift operation for the second operand (Rm)
+	op2, carryOut := c.calcOp2(instruction)
+
+	// Perform the operation
+	result := c.Registers[instruction.Rn] & ^op2
+
+	// Store result in the destination register (Rd)
+	c.Registers[instruction.Rd] = result
+
+	// Set flags if the instruction specifies (S = true)
+	if instruction.S {
+		c.setFlags(result, carryOut, instruction)
+	}
+	fmt.Printf("ARM BIC (Bit Clear) Operand2: %d, Result = %d\n", op2, result)
+}
+
+// Execute MVN instruction
+func (c *CPU) ExecMvn_Arm(instruction ARMDataProcessingInstruction) {
+	// Handle the shift operation for the second operand (Rm)
+	op2, carryOut := c.calcOp2(instruction)
+
+	// Perform the operation
+	result := ^op2
+
+	// Store result in the destination register (Rd)
+	c.Registers[instruction.Rd] = result
+
+	// Set flags if the instruction specifies (S = true)
+	if instruction.S {
+		c.setFlags(result, carryOut, instruction)
+	}
+	fmt.Printf("ARM MVN (Not) Operand2: %d, Result = %d\n", op2, result)
 }
 
 // Execute EOR instruction
