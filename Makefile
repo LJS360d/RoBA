@@ -1,48 +1,46 @@
+.PHONY: all build run clean test deps
 ifeq ($(OS),Windows_NT)
-# Windows specific
 	EXE := .exe
-	DEL := del /f
-	SET_ENV := set
-	SEP := &
 else
-# Other shells
 	EXE :=
-	DEL := rm -f
-	SET_ENV :=
-	SEP := ;
 endif
-MODULE_NAME   := $(shell go list -m)
+# Go parameters
+GOCMD=go
+GOBUILD=$(GOCMD) build
+GOCLEAN=$(GOCMD) clean
+GOTEST=$(GOCMD) test
+GOGET=$(GOCMD) get
+GORUN=$(GOCMD) run
 
-BUILD_DIR 		= bin
-BINARY_NAME 	= $(MODULE_NAME)
-BUILDPATH 		= $(BUILD_DIR)/$(BINARY_NAME)$(EXE)
-MAIN_PACKAGE 	= ./cmd/desktop
+# Binary name
+BINARY_NAME=GoBA$(EXE)
+BINARY_UNIX=$(BINARY_NAME)
 
-WASM_BINARY_NAME 	= $(MODULE_NAME).wasm
-WASM_BUILDPATH 		= $(BUILD_DIR)/$(WASM_BINARY_NAME)
-WASM_MAIN_PACKAGE 	= ./cmd/web
+# All targets
+all: build
 
-all: build-wasm
+$(BINARY_NAME):
+	$(GOBUILD) -o $(BINARY_NAME) main.go
 
+# Build the application
 build:
-	go build -o $(BUILDPATH) $(MAIN_PACKAGE)
+	$(GOBUILD) -o $(BINARY_NAME) main.go
 
-build-wasm:
-	$(SET_ENV) GOOS=js$(SEP) $(SET_ENV) GOARCH=wasm$(SEP) go build -o $(WASM_BUILDPATH) $(WASM_MAIN_PACKAGE)
-
-test:
-	go test -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out -o coverage.html
-
-lint:
-	go fmt ./...
-
-clean:
-	go clean
-	$(DEL) $(BUILDPATH)
-	$(DEL) $(WASM_BUILDPATH)
-
+# Run the application
 run: build
-	./$(BUILDPATH)
+	./$(BINARY_NAME) -rom=test/emerald.gba
 
-.PHONY: all build build-wasm test lint clean run
+# Clean the binary
+clean:
+	$(GOCLEAN)
+	rm -f $(BINARY_NAME)
+	rm -f $(BINARY_UNIX)
+
+# Run tests
+test:
+	$(GOTEST) -v ./...
+
+# Get dependencies
+deps:
+	$(GOGET)
+
