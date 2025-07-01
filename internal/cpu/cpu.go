@@ -51,7 +51,7 @@ func (c *CPU) Step() {
 	c.Cycles += 1 // Simplified cycle counting
 }
 
-func (c *CPU) setFlags(result uint32, carryOut bool, instruction ARMDataProcessingInstruction) {
+func (c *CPU) setFlags(result uint32, carryOut bool, instruction ARMInstruction) {
 	// Update Negative flag (N) - set if the result is negative (i.e., bit 31 is set)
 	c.Registers.SetFlagN(result&0x80000000 != 0)
 
@@ -62,12 +62,12 @@ func (c *CPU) setFlags(result uint32, carryOut bool, instruction ARMDataProcessi
 	c.Registers.SetFlagC(carryOut)
 
 	// Update Overflow flag (V) - only for arithmetic operations
-	switch instruction.Opcode {
+	switch instruction.OpcodeDP {
 	case ADD, ADC, SUB, SBC, RSB, RSC, CMP, CMN:
 		// For arithmetic operations, check for overflow conditions
 		rn := c.Registers.GetReg(instruction.Rn)
 		rm := c.Registers.GetReg(instruction.Rm)
-		overflow := checkOverflow(rn, rm, result, instruction.Opcode)
+		overflow := checkOverflow(rn, rm, result, instruction.OpcodeDP)
 		c.Registers.SetFlagV(overflow)
 	default:
 		// For logical operations, Overflow flag isn't affected

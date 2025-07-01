@@ -1,6 +1,6 @@
 package cpu
 
-import "fmt"
+import "GoBA/util/dbg"
 
 func (c *CPU) execute_Thumb(instruction uint16) {
 	decoded := DecodeInstruction_Thumb(instruction)
@@ -8,7 +8,7 @@ func (c *CPU) execute_Thumb(instruction uint16) {
 	// Handle DataProcessingInstruction
 	case THUMBDataProcessingInstruction:
 	default:
-		fmt.Printf("Unknown Thumb instruction: 0x%v\n", inst)
+		dbg.Printf("Unknown Thumb instruction: 0x%v\n", inst)
 	}
 
 }
@@ -24,5 +24,4 @@ func (c *CPU) execAdd_Thumb(instruction uint32) {
 
 	result := c.Registers[rm] + c.Registers[rn]
 	c.Registers[rn] = result // Store result in Rn
-	fmt.Printf("Thumb ADD R%d, R%d: Result = %d\n", rn, rm, result)
 }

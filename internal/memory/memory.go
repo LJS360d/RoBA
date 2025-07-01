@@ -64,8 +64,7 @@ func (m *Memory) Read8(addr uint32) byte {
 	case addr >= ROM_START && addr <= ROM_END:
 		return m.ROM[addr-ROM_START]
 	default:
-		fmt.Printf("Unhandled memory read at address 0x%08X\n", addr)
-		return 0
+		panic("read from out of bounds memory address 0x" + fmt.Sprintf("%08X", addr))
 	}
 }
 
@@ -81,6 +80,6 @@ func (m *Memory) Write8(addr uint32, value byte) {
 	case addr >= OAM_START && addr <= OAM_END:
 		m.OAM[addr-OAM_START] = value
 	default:
-		fmt.Printf("Unhandled memory write at address 0x%08X with value 0x%02X\n", addr, value)
+		panic(fmt.Sprintf("attempted write [0x%08x] to out of bounds memory address 0x%08x", value, addr))
 	}
 }

@@ -2,7 +2,9 @@ package cpu
 
 import (
 	"GoBA/internal/interfaces"
+	"GoBA/util/dbg"
 	"fmt"
+	"strconv"
 )
 
 // ARM7TDMI CPU operating modes
@@ -123,8 +125,7 @@ func (r *Registers) SetMode(mode uint8) {
 // This simplified GetReg returns the raw PC value for now.
 func (r *Registers) GetReg(regNum uint8) uint32 {
 	if regNum > 15 {
-		fmt.Printf("Warning: Attempt to read invalid register R%d\n", regNum)
-		return 0 // Or panic
+		panic("read from undefined register R" + strconv.Itoa(int(regNum)))
 	}
 
 	mode := r.GetMode() // Use the mode from CPSR
@@ -167,7 +168,7 @@ func (r *Registers) GetReg(regNum uint8) uint32 {
 		case IRQMode:
 			return r.SP_irq
 		default: // Should ideally not happen if mode is always valid
-			fmt.Printf("Warning: GetReg(R13) in unknown mode %02X\n", mode)
+			dbg.Printf("Warning: GetReg(R13) in unknown mode %02X\n", mode)
 			return r.SP_usr // Fallback, or panic
 		}
 	}
@@ -185,7 +186,7 @@ func (r *Registers) GetReg(regNum uint8) uint32 {
 		case IRQMode:
 			return r.LR_irq
 		default: // Should ideally not happen
-			fmt.Printf("Warning: GetReg(R14) in unknown mode %02X\n", mode)
+			dbg.Printf("Warning: GetReg(R14) in unknown mode %02X\n", mode)
 			return r.LR_usr // Fallback, or panic
 		}
 	}
@@ -200,8 +201,7 @@ func (r *Registers) GetReg(regNum uint8) uint32 {
 // Writing to R15 (PC) performs a branch.
 func (r *Registers) SetReg(regNum uint8, value uint32) {
 	if regNum > 15 {
-		fmt.Printf("Warning: Attempt to write invalid register R%d\n", regNum)
-		return
+		panic("write to undefined register R" + strconv.Itoa(int(regNum)))
 	}
 
 	mode := r.GetMode() // Use the mode from CPSR
@@ -257,7 +257,7 @@ func (r *Registers) SetReg(regNum uint8, value uint32) {
 			r.SP_irq = value
 			return
 		default: // Should ideally not happen
-			fmt.Printf("Warning: SetReg(R13) in unknown mode %02X\n", mode)
+			dbg.Printf("Warning: SetReg(R13) in unknown mode %02X\n", mode)
 			r.SP_usr = value // Fallback, or panic
 			return
 		}
@@ -281,7 +281,7 @@ func (r *Registers) SetReg(regNum uint8, value uint32) {
 			r.LR_irq = value
 			return
 		default: // Should ideally not happen
-			fmt.Printf("Warning: SetReg(R14) in unknown mode %02X\n", mode)
+			dbg.Printf("Warning: SetReg(R14) in unknown mode %02X\n", mode)
 			r.LR_usr = value // Fallback, or panic
 			return
 		}
@@ -312,10 +312,10 @@ func (r *Registers) GetSPSR() uint32 {
 		// GBATEK: "SPSR is accessible in all privileged modes, but NOT in User mode."
 		// "SPSR_usr and SPSR_sys do not exist"
 		// Let's return CPSR as some emulators do, or 0. For now, 0.
-		// fmt.Printf("Warning: GetSPSR() called in USR/SYS mode\n")
+		// dbg.Printf("Warning: GetSPSR() called in USR/SYS mode\n")
 		return 0
 	default:
-		fmt.Printf("Warning: GetSPSR() in unknown mode %02X\n", r.GetMode())
+		dbg.Printf("Warning: GetSPSR() in unknown mode %02X\n", r.GetMode())
 		return 0 // Should not happen
 	}
 }
@@ -337,10 +337,10 @@ func (r *Registers) SetSPSR(value uint32) {
 		r.SPSR_und = value
 	case USRMode, SYSMode:
 		// SPSR_usr and SPSR_sys do not exist. MSR to SPSR in USR/SYS is unpredictable.
-		// fmt.Printf("Warning: SetSPSR() called in USR/SYS mode. No action taken.\n")
+		// dbg.Printf("Warning: SetSPSR() called in USR/SYS mode. No action taken.\n")
 		return
 	default:
-		fmt.Printf("Warning: SetSPSR() in unknown mode %02X\n", currentActualMode)
+		dbg.Printf("Warning: SetSPSR() in unknown mode %02X\n", currentActualMode)
 		return // Should not happen
 	}
 }

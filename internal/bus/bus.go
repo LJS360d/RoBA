@@ -1,7 +1,6 @@
 package bus
 
 import (
-	"fmt"
 	"log"
 
 	"GoBA/internal/apu"
@@ -13,6 +12,7 @@ import (
 	"GoBA/internal/memory"
 	"GoBA/internal/ppu"
 	"GoBA/internal/timer"
+	"GoBA/util/dbg"
 )
 
 // GBA Memory Map Constants
@@ -139,7 +139,7 @@ func (b *Bus) Read8(addr uint32) uint8 {
 		// Example: if dma.IsDMAIORegister(maskedAddr) { return b.DMAController.Read(maskedAddr) }
 
 		// Fallback for unhandled I/O registers (should log or return open bus value)
-		fmt.Printf("Bus: Unhandled 8-bit read from I/O addr %08X (masked %04X)\n", addr, maskedAddr)
+		dbg.Printf("Bus: Unhandled 8-bit read from I/O addr %08X (masked %04X)\n", addr, maskedAddr)
 		if maskedAddr < b.IORegs.Size() {
 			return b.IORegs.GetReg(maskedAddr)
 		}
@@ -174,7 +174,7 @@ func (b *Bus) Read8(addr uint32) uint8 {
 	default:
 		// Open bus read - GBA returns prefetch buffer or specific values.
 		// For now, return 0xFF and log
-		// fmt.Printf("Bus: Unhandled 8-bit read from address %08X", addr)
+		// dbg.Printf("Bus: Unhandled 8-bit read from address %08X\n", addr)
 		return 0xFF // Or specific open bus behavior if known
 	}
 }
@@ -185,7 +185,7 @@ func (b *Bus) Write8(addr uint32, value uint8) {
 	// BIOS (Read-Only)
 	case /* addr >= 0x00000000 &&  */ addr <= 0x00003FFF:
 		// Attempted write to BIOS. GBA BIOS is Read-Only. Ignore or log an error.
-		// fmt.Printf("WARN: Attempted write to Read-Only BIOS at %08X\n", addr)
+		dbg.Printf("WARN: Attempted write to Read-Only BIOS at %08X\n", addr)
 		return
 	// EWRAM (External Work RAM)
 	case addr >= 0x02000000 && addr <= 0x0203FFFF:
@@ -210,7 +210,7 @@ func (b *Bus) Write8(addr uint32, value uint8) {
 	// Game Pak ROM/Flash (WS0, WS1, WS2) - Read-Only
 	case addr >= 0x08000000 && addr <= 0x0DFFFFFF:
 		// Attempted write to ROM/Flash. This region is Read-Only. Ignore or log
-		// fmt.Printf("WARN: Attempted write to Read-Only ROM at %08X\n", addr)
+		dbg.Printf("WARN: Attempted write to Read-Only ROM at %08X\n", addr)
 		return
 	// Game Pak SRAM (Save RAM) - Writable
 	case addr >= 0x0E000000 && addr <= 0x0E00FFFF:
@@ -219,7 +219,7 @@ func (b *Bus) Write8(addr uint32, value uint8) {
 		b.Cartridge.WriteSRAM8(addr-0x0E000000, value) // Assuming your Cartridge has a WriteSRAM8
 	default:
 		// Unhandled or open bus address
-		fmt.Printf("Bus: Unhandled 8-bit write to address %08X\n", addr)
+		dbg.Printf("Bus: Unhandled 8-bit write to address %08X\n", addr)
 	}
 }
 

@@ -6,7 +6,8 @@ else
 endif
 # Go parameters
 GOCMD=go
-GOBUILD=$(GOCMD) build
+BUILD_TAGS=release
+GOBUILD=$(GOCMD) build -tags $(BUILD_TAGS)
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
@@ -26,7 +27,7 @@ $(BINARY_NAME):
 build:
 	$(GOBUILD) -o $(BINARY_NAME) main.go
 
-# Run the application
+run: BUILD_TAGS=debug
 run: build
 	./$(BINARY_NAME) -rom=test/emerald.gba
 

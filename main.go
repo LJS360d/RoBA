@@ -7,8 +7,8 @@ import (
 	"GoBA/internal/io"
 	"GoBA/internal/memory"
 	"GoBA/internal/ppu"
+	"GoBA/util/dbg"
 	"flag"
-	"fmt"
 	"image"
 	"image/png"
 	"log"
@@ -69,7 +69,7 @@ func main() {
 
 		// Simple FPS limiting
 		if time.Since(lastTime) >= time.Second {
-			fmt.Printf("FPS: %d\n", frameCount)
+			dbg.Printf("FPS: %d\n", frameCount)
 			frameCount = 0
 			lastTime = time.Now()
 		}

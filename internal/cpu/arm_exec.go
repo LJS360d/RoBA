@@ -1,6 +1,18 @@
 package cpu
 
-import "fmt"
+import (
+	"GoBA/util/convert"
+	"GoBA/util/dbg"
+	"fmt"
+)
+
+// PSR (Program Status Register) fields as constants for MSR field mask
+const (
+	PSR_FLAGS     uint32 = 0xFF000000 // Bits 31-24 (f)
+	PSR_STATUS    uint32 = 0x00FF0000 // Bits 23-16 (s) - Reserved, don't change
+	PSR_EXTENSION uint32 = 0x0000FF00 // Bits 15-8  (x) - Reserved, don't change
+	PSR_CONTROL   uint32 = 0x000000FF // Bits 7-0   (c)
+)
 
 // execute ARM instruction based on opcode.
 func (c *CPU) execute_Arm(instruction uint32) {
@@ -12,12 +24,16 @@ func (c *CPU) execute_Arm(instruction uint32) {
 		// fmt.Println("NOP")
 		return // Condition not met, treat as NOP
 	}
-	decoded := DecodeInstruction_Arm(instruction)
-	fmt.Printf("execute_Arm: %08X\n", instruction)
-	switch inst := decoded.(type) {
-	case ARMDataProcessingInstruction:
-		// Handle DataProcessingInstruction
-		switch inst.Opcode {
+	dbg.Printf("0x%08X | 0b%032b\n", instruction, instruction)
+	inst, err := DecodeInstruction_Arm(instruction)
+	if err != nil {
+		dbg.Printf("ARM Decode Error: %s\n", err)
+		return
+	}
+	dbg.Printf("%s", inst.String())
+	switch inst.Type {
+	case ARMITDataProcessing:
+		switch inst.OpcodeDP {
 		case AND:
 			c.execArm_And(inst)
 		case EOR:
@@ -53,26 +69,36 @@ func (c *CPU) execute_Arm(instruction uint32) {
 		}
 		return
 
-	case ARMLoadStoreInstruction:
+	case ARMITLoadStore:
 		c.execArm_LoadStore(inst, c.Registers.PC-8)
 		return
 
-	case ARMBranchInstruction:
+	case ARMITBranch:
 		c.execArm_Branch(inst, c.Registers.PC-8)
 		return
 
-	// Control Instructions
-	case ARMBlockDataTransferInstruction:
+	case ARMITBlockDataTransfer:
 		c.execArm_BlockDataTransfer(inst, c.Registers.PC-8)
 		return
 
-	case ARMSWIInstruction:
+	case ARMITSWI:
 		c.execArm_SWI(inst)
 		return
 
-	case ARMControlInstruction:
-		panic(fmt.Sprintf("Unhandled ARM control instruction: %08X at PC=%08X",
-			instruction, c.Registers.PC-8))
+	case ARMITMultiply:
+		fallthrough
+
+	case ARMITTransferMRS:
+		c.execArm_Mrs(inst)
+		return
+
+	case ARMITTransferMSR:
+		c.execArm_Msr(inst)
+		return
+
+	case ARMITUndefined:
+		fallthrough
+
 	default:
 		// panic on unknown instruction
 		panic(fmt.Sprintf("Unimplemented ARM instruction: %08X at PC=%08X",
@@ -130,9 +156,8 @@ func (c *CPU) checkCondition_Arm(cond uint32) bool {
 // ##################################################
 
 // execute ADD instruction
-func (c *CPU) execArm_Add(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Add(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
@@ -146,14 +171,11 @@ func (c *CPU) execArm_Add(instruction ARMDataProcessingInstruction) {
 	if instruction.S {
 		c.setFlags(result, carryOut, instruction)
 	}
-
-	fmt.Printf("ARM ADD R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
 // execute ADC instruction
-func (c *CPU) execArm_Adc(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Adc(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
@@ -171,13 +193,12 @@ func (c *CPU) execArm_Adc(instruction ARMDataProcessingInstruction) {
 		c.setFlags(result, carryOut, instruction)
 	}
 
-	fmt.Printf("ARM ADC (Add with Carry) R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
 // execute SBC instruction
-func (c *CPU) execArm_Sbc(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Sbc(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
+	// rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
@@ -194,13 +215,11 @@ func (c *CPU) execArm_Sbc(instruction ARMDataProcessingInstruction) {
 		c.setFlags(result, carryOut, instruction)
 	}
 
-	fmt.Printf("ARM SBC (Subtract with Carry) R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
 // execute RSC instruction
-func (c *CPU) execArm_Rsc(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Rsc(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
@@ -217,65 +236,55 @@ func (c *CPU) execArm_Rsc(instruction ARMDataProcessingInstruction) {
 		c.setFlags(result, carryOut, instruction)
 	}
 
-	fmt.Printf("ARM RSC (Reversed Subtract with Carry) R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
 // execute TST instruction
-func (c *CPU) execArm_Tst(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Tst(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, _ := c.calcOp2(instruction)
 	// Perform the operation between Rn and operand2
 	_ = c.Registers.GetReg(rn) & op2
 
-	fmt.Printf("ARM TST R%d, R%d, Operand2: %d\n", rn, rm, op2)
 }
 
 // execute TEQ instruction
-func (c *CPU) execArm_Teq(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Teq(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, _ := c.calcOp2(instruction)
 	// Perform the XOR operation between Rn and operand2
 	_ = c.Registers.GetReg(rn) ^ op2
 
-	fmt.Printf("ARM TEQ R%d, R%d, Operand2: %d\n", rn, rm, op2)
 }
 
 // execute CMP instruction
-func (c *CPU) execArm_Cmp(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Cmp(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, _ := c.calcOp2(instruction)
 	// Perform the operation between Rn and operand2
 	_ = c.Registers.GetReg(rn) - op2
 
-	fmt.Printf("ARM CMP R%d, R%d, Operand2: %d\n", rn, rm, op2)
 }
 
 // execute CMN instruction
-func (c *CPU) execArm_Cmn(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Cmn(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, _ := c.calcOp2(instruction)
 	// Perform the operation between Rn and operand2
 	_ = c.Registers.GetReg(rn) + op2
 
-	fmt.Printf("ARM CMN R%d, R%d, Operand2: %d\n", rn, rm, op2)
 }
 
 // execute SUB instruction
-func (c *CPU) execArm_Sub(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Sub(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
@@ -292,13 +301,11 @@ func (c *CPU) execArm_Sub(instruction ARMDataProcessingInstruction) {
 		c.setFlags(result, carryOut, instruction)
 	}
 
-	fmt.Printf("ARM SUB R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
 // execute RSB instruction
-func (c *CPU) execArm_Rsb(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Rsb(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
@@ -314,12 +321,10 @@ func (c *CPU) execArm_Rsb(instruction ARMDataProcessingInstruction) {
 		c.setFlags(result, carryOut, instruction)
 	}
 
-	fmt.Printf("ARM RSB (Reverse Sub) R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
-func (c *CPU) execArm_And(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_And(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
@@ -335,13 +340,11 @@ func (c *CPU) execArm_And(instruction ARMDataProcessingInstruction) {
 		c.setFlags(result, carryOut, instruction)
 	}
 
-	fmt.Printf("ARM AND R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
 // execute ORR instruction
-func (c *CPU) execArm_Orr(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Orr(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
@@ -356,11 +359,10 @@ func (c *CPU) execArm_Orr(instruction ARMDataProcessingInstruction) {
 	if instruction.S {
 		c.setFlags(result, carryOut, instruction)
 	}
-	fmt.Printf("ARM ORR R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
 }
 
 // execute MOV instruction
-func (c *CPU) execArm_Mov(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Mov(instruction ARMInstruction) {
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
 
@@ -374,11 +376,10 @@ func (c *CPU) execArm_Mov(instruction ARMDataProcessingInstruction) {
 	if instruction.S {
 		c.setFlags(result, carryOut, instruction)
 	}
-	fmt.Printf("ARM MOV Operand2: %d, Result = %d\n", op2, result)
 }
 
 // execute BIC instruction
-func (c *CPU) execArm_Bic(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Bic(instruction ARMInstruction) {
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
 
@@ -392,11 +393,10 @@ func (c *CPU) execArm_Bic(instruction ARMDataProcessingInstruction) {
 	if instruction.S {
 		c.setFlags(result, carryOut, instruction)
 	}
-	fmt.Printf("ARM BIC (Bit Clear) Operand2: %d, Result = %d\n", op2, result)
 }
 
 // execute MVN instruction
-func (c *CPU) execArm_Mvn(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Mvn(instruction ARMInstruction) {
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
 
@@ -410,13 +410,11 @@ func (c *CPU) execArm_Mvn(instruction ARMDataProcessingInstruction) {
 	if instruction.S {
 		c.setFlags(result, carryOut, instruction)
 	}
-	fmt.Printf("ARM MVN (Not) Operand2: %d, Result = %d\n", op2, result)
 }
 
 // execute EOR instruction
-func (c *CPU) execArm_Eor(instruction ARMDataProcessingInstruction) {
+func (c *CPU) execArm_Eor(instruction ARMInstruction) {
 	rn := instruction.Rn
-	rm := instruction.Rm
 
 	// Handle the shift operation for the second operand (Rm)
 	op2, carryOut := c.calcOp2(instruction)
@@ -432,25 +430,6 @@ func (c *CPU) execArm_Eor(instruction ARMDataProcessingInstruction) {
 		c.setFlags(result, carryOut, instruction)
 	}
 
-	fmt.Printf("ARM EOR R%d, R%d, Operand2: %d, Result = %d\n", rn, rm, op2, result)
-}
-
-func (c *CPU) calcOp2(instruction ARMDataProcessingInstruction) (uint32, bool) {
-	if instruction.I {
-		// Immediate operand case: instruction uses a rotated immediate value
-		// Apply ROR to the immediate value (instruction.Nn) by instruction.Is * 2
-		rotatedImmediate := applyShift(uint32(instruction.Nn), ROR, uint32(instruction.Is*2))
-		carryOut := (instruction.Is != 0) && (uint32(instruction.Nn)&0x80000000 != 0) // Carry from the ROR
-		return rotatedImmediate, carryOut
-	} else {
-		// Register operand case: Rm can be shifted by Is or Rs
-		rm := c.Registers.GetReg(instruction.Rm)
-		if instruction.ShiftType < 4 {
-			return applyShift(rm, instruction.ShiftType, uint32(instruction.Is)), (rm & (1 << (instruction.Is - 1))) != 0
-		}
-	}
-
-	return 0, false // Default case, shouldn't be hit
 }
 
 // #############################
@@ -459,28 +438,21 @@ func (c *CPU) calcOp2(instruction ARMDataProcessingInstruction) (uint32, bool) {
 
 // execArm_Branch executes B and BL instructions.
 // `currentInstructionAddr` is the address of the branch instruction itself.
-func (c *CPU) execArm_Branch(inst ARMBranchInstruction, currentInstructionAddr uint32) {
+func (c *CPU) execArm_Branch(inst ARMInstruction, currentInstructionAddr uint32) {
 
 	if !c.checkCondition_Arm((currentInstructionAddr >> 28) & 0xF) {
 		// Condition not met, so the branch is NOT taken.
 		// PC should simply advance to the next instruction in sequence.
 		c.Registers.PC = currentInstructionAddr + 4
-		c.FlushPipeline()                                                                              // Conditional branches still flush the pipeline if not taken
-		fmt.Printf("Conditional Branch (Cond: %X) not taken. PC to %08X\n", inst.Cond, c.Registers.PC) // Optional debug log
+		c.FlushPipeline() // Conditional branches still flush the pipeline if not taken
 		return
 	}
 
 	// The offset is relative to PC+8 (i.e., current instruction address + 8)
 	// This sign extension logic correctly handles the 26-bit value now in inst.TargetAddr
-	var signedOffset int32
-	if (inst.TargetAddr & 0x02000000) != 0 { // Checks bit 25, the sign bit of a 26-bit value
-		signedOffset = int32(inst.TargetAddr | 0xFC000000) // Correctly sign-extends 26-bit to 32-bit
-	} else {
-		signedOffset = int32(inst.TargetAddr)
-	}
 
 	// targetAddress = (address of branch instruction + 8) + signed_offset
-	targetAddress := (currentInstructionAddr + 8) + uint32(signedOffset)
+	targetAddress := (currentInstructionAddr + 8) + uint32(inst.OffsetBranch)
 
 	if inst.Link {
 		// BL instruction: Save return address (address of next instruction after BL) to R14 (LR)
@@ -491,7 +463,6 @@ func (c *CPU) execArm_Branch(inst ARMBranchInstruction, currentInstructionAddr u
 	// Set PC to the target address
 	c.Registers.PC = targetAddress
 	c.FlushPipeline() // Branch flushes the pipeline
-	fmt.Printf("Branch to %08X\n", targetAddress)
 }
 
 // #############################
@@ -500,7 +471,7 @@ func (c *CPU) execArm_Branch(inst ARMBranchInstruction, currentInstructionAddr u
 
 // execArm_LoadStore executes LDR and STR instructions with immediate offset.
 // `currentInstructionAddr` is the address of the instruction itself.
-func (c *CPU) execArm_LoadStore(inst ARMLoadStoreInstruction, currentInstructionAddr uint32) {
+func (c *CPU) execArm_LoadStore(inst ARMInstruction, currentInstructionAddr uint32) {
 	baseAddr := c.Registers.GetReg(inst.Rn)
 	offset := inst.Offset // 12-bit immediate offset
 
@@ -515,10 +486,8 @@ func (c *CPU) execArm_LoadStore(inst ARMLoadStoreInstruction, currentInstruction
 	// Calculate address based on P (Pre/Post-indexed)
 	if inst.P { // Pre-indexed addressing
 		finalAddr = baseAddr + uint32(effectiveOffset)
-		fmt.Printf("Pre-indexed address: %08X\n", finalAddr)
 	} else { // Post-indexed addressing
 		finalAddr = baseAddr // Use baseAddr for memory access first
-		fmt.Printf("Post-indexed address: %08X\n", finalAddr)
 	}
 
 	// Perform Load (L=1) or Store (L=0)
@@ -526,10 +495,8 @@ func (c *CPU) execArm_LoadStore(inst ARMLoadStoreInstruction, currentInstruction
 		var loadedValue uint32
 		if inst.B { // Byte transfer (LDRB)
 			loadedValue = uint32(c.Bus.Read8(finalAddr))
-			fmt.Printf("LDRB R%d, [%08X] = %02X\n", inst.Rd, finalAddr, loadedValue)
 		} else { // Word transfer (LDR)
 			loadedValue = c.Bus.Read32(finalAddr)
-			fmt.Printf("LDR R%d, [%08X] = %08X\n", inst.Rd, finalAddr, loadedValue)
 		}
 
 		// Write loaded value to Rd
@@ -547,17 +514,14 @@ func (c *CPU) execArm_LoadStore(inst ARMLoadStoreInstruction, currentInstruction
 				c.Registers.PC = loadedValue & 0xFFFFFFFC // Word align for ARM
 			}
 			c.FlushPipeline()
-			fmt.Printf("LDR to PC, new PC: %08X, Thumb: %t\n", c.Registers.PC, c.Registers.IsThumb())
 		}
 
 	} else { // Store (STR)
 		valueToStore := c.Registers.GetReg(inst.Rd)
 		if inst.B { // Byte transfer (STRB)
 			c.Bus.Write8(finalAddr, uint8(valueToStore))
-			fmt.Printf("STRB R%d, [%08X] = %02X\n", inst.Rd, finalAddr, uint8(valueToStore))
 		} else { // Word transfer (STR)
 			c.Bus.Write32(finalAddr, valueToStore)
-			fmt.Printf("STR R%d, [%08X] = %08X\n", inst.Rd, finalAddr, valueToStore)
 		}
 	}
 
@@ -567,10 +531,8 @@ func (c *CPU) execArm_LoadStore(inst ARMLoadStoreInstruction, currentInstruction
 		// If P=0 (Post-indexed), the base address needs to be updated after memory access
 		if inst.P { // Post-indexed write-back
 			c.Registers.SetReg(inst.Rn, baseAddr+uint32(effectiveOffset))
-			fmt.Printf("Post-indexed write-back to R%d: %08X\n", inst.Rn, baseAddr+uint32(effectiveOffset))
 		} else { // Pre-indexed write-back (finalAddr already has the updated value)
 			c.Registers.SetReg(inst.Rn, finalAddr)
-			fmt.Printf("Pre-indexed write-back to R%d: %08X\n", inst.Rn, finalAddr)
 		}
 	}
 
@@ -585,12 +547,39 @@ func (c *CPU) execArm_LoadStore(inst ARMLoadStoreInstruction, currentInstruction
 // ARM Control Instructions Implementations
 // #############################
 
-func (c *CPU) execArm_SWI(inst ARMSWIInstruction) {
-	fmt.Printf("SWI\n")
-	panic("Unimplemented")
+// Implementation for execArm_SWI
+// This function handles the Software Interrupt (SWI) instruction,
+// causing an exception to Supervisor mode and jumping to the SWI vector.
+
+// 1. Save return address (PC + 4) to R14_svc.
+// In ARM7TDMI, PC points to current_instruction_address + 8.
+// So, the address of the instruction *after* the SWI is (current_PC - 8) + 4 = current_PC - 4.
+// A full emulator would use a banked R14_svc. For this example, we will store it in R14.
+func (c *CPU) execArm_SWI(inst ARMInstruction) {
+	// Implementation for execArm_SWI
+	// This function handles the Software Interrupt (SWI) instruction,
+	// causing an exception to Supervisor mode and jumping to the SWI vector.
+
+	c.Registers.SetMode(SVCMode)
+	// Save return address (PC + 4) to R14_svc.
+	c.Registers.SetReg(14, c.Registers.PC-4)
+
+	// 2. Save current CPSR to SPSR_svc.
+	c.Registers.SetSPSR(c.Registers.CPSR)
+
+	// 3. Change CPU mode to Supervisor (0x13).
+	// Clear current mode bits (M4:0) and set to Supervisor mode.
+	c.Registers.CPSR = (c.Registers.CPSR & 0xFFFFFFE0) | 0x13
+
+	// 4. Set IRQ disable bit (I flag, bit 7) in CPSR to 1.
+	c.Registers.CPSR |= (1 << 7) // Set I bit
+
+	// 5. Set PC to SWI exception vector (0x00000008).
+	// The CPU pipeline means the actual jump happens after fetching from this address.
+	c.Registers.PC = 0x08
 }
 
-func (c *CPU) execArm_BlockDataTransfer(inst ARMBlockDataTransferInstruction, currentInstructionAddr uint32) {
+func (c *CPU) execArm_BlockDataTransfer(inst ARMInstruction, currentInstructionAddr uint32) {
 	baseAddr := c.Registers.GetReg(inst.Rn)
 	numRegisters := 0
 	for i := 0; i < 16; i++ {
@@ -633,11 +622,9 @@ func (c *CPU) execArm_BlockDataTransfer(inst ARMBlockDataTransferInstruction, cu
 				// Special handling for PC (R15): If PC is loaded, it triggers a branch
 				if i == 15 { // Corrected: Check against 15 directly
 					c.Registers.SetReg(15, val&0xFFFFFFFC) // PC must be word-aligned for ARM mode
-					fmt.Printf("BDF: PC = %08X\n", val&0xFFFFFFFC)
-					c.FlushPipeline() // PC change requires flushing the pipeline
+					c.FlushPipeline()                      // PC change requires flushing the pipeline
 				} else {
 					c.Registers.SetReg(uint8(i), val)
-					fmt.Printf("BDF: R%d = %08X\n", i, val)
 				}
 			} else { // STM (Store Multiple)
 				val := c.Registers.GetReg(uint8(i))
@@ -647,7 +634,6 @@ func (c *CPU) execArm_BlockDataTransfer(inst ARMBlockDataTransferInstruction, cu
 					val = currentInstructionAddr + 12
 				}
 				c.Bus.Write32(currentTransferAddr, val)
-				fmt.Printf("BDF: Bus Write32 %08X = %08X\n", currentTransferAddr, val)
 			}
 
 			// Adjust address for next transfer
@@ -668,40 +654,238 @@ func (c *CPU) execArm_BlockDataTransfer(inst ARMBlockDataTransferInstruction, cu
 		// unless it's the last register. However, for simplicity and typical behavior,
 		// the final base address is written back to Rn if W is set.
 		c.Registers.SetReg(inst.Rn, finalBaseAddr)
-		fmt.Printf("BDF: R%d (Rn) written back = %08X\n", inst.Rn, finalBaseAddr)
 	}
 
 	// --- S-bit Handling (Optional) ---
 	if inst.S {
-		fmt.Printf("Warning: S-bit for Block Data Transfer (LDM/STM) is not fully emulated yet for instruction %08X\n", inst.ARMInstruction)
+		dbg.Printf("Warning: S-bit for Block Data Transfer (LDM/STM) is not fully emulated yet for instruction %s", inst.String())
 	}
+}
+
+// #############################################
+//   ARM Multiply Instructions Implementations
+// #############################################
+
+// ##################################################
+//   ARM PSR Transfer Instructions Implementations
+// ##################################################
+
+func (c *CPU) execArm_Mrs(inst ARMInstruction) {
+	// Determine which PSR to read from: CPSR (0) or SPSR_<current mode> (1)
+	// The Psr bit (bit 22) indicates this.
+	// In the ARMInstruction struct, this information isn't explicitly
+	// stored as a separate boolean for MRS. It's implicitly part of the
+	// "Psr" field in the opcode documentation.
+	// We need to re-extract it from the raw instruction or modify ARMInstruction
+	// to include it for PSR Transfer types.
+	// Based on the documentation, bit 22 is Psr.
+	rawInstruction := c.Bus.Read32(c.Registers.PC - 8)
+	psrSourceBit := (rawInstruction >> 22) & 0x1
+
+	var sourcePSR uint32
+	if psrSourceBit == 0 { // CPSR
+		sourcePSR = c.Registers.CPSR
+	} else { // SPSR_<current mode>
+		// In a real emulator, you'd need to determine the current mode
+		// and access the correct SPSR. For simplicity, we'll assume a
+		// common SPSR access, or panic if SPSR doesn't exist (e.g., User/System mode).
+		if c.Registers.GetMode() == USRMode || c.Registers.GetMode() == SYSMode {
+			panic(fmt.Sprintf("MRS: SPSR does not exist in current mode (%d)", c.Registers.GetMode()))
+		}
+		sourcePSR = c.Registers.GetSPSR()
+	}
+
+	// Rd = Psr
+	c.Registers.SetReg(inst.Rd, sourcePSR)
+}
+
+// execArm_Msr executes the MSR (Move to PSR from Register/Immediate) instruction.
+// MSR{cond} Psr{_field},Op
+func (c *CPU) execArm_Msr(inst ARMInstruction) {
+	// Determine which PSR to write to: CPSR (0) or SPSR_<current mode> (1)
+	rawInstruction := c.Bus.Read32(c.Registers.PC - 8) // Assuming PC is already incremented
+	psrDestBit := (rawInstruction >> 22) & 0x1
+
+	// Extract field mask bits (f, s, x, c) from bits 19-16
+	fieldMask := uint32((rawInstruction >> 16) & 0xF)
+	writeFlags := ((fieldMask >> 3) & 0x1) == 1     // Bit 19 (f)
+	writeStatus := ((fieldMask >> 2) & 0x1) == 1    // Bit 18 (s)
+	writeExtension := ((fieldMask >> 1) & 0x1) == 1 // Bit 17 (x)
+	writeControl := (fieldMask & 0x1) == 1          // Bit 16 (c)
+
+	// Determine the operand value
+	var operandValue uint32
+	if inst.I { // Immediate operand
+		// Immediate value already calculated and rotated by the decoder in inst.Immediate
+		operandValue = inst.Immediate
+	} else { // Register operand
+		operandValue = c.Registers.GetReg(inst.Rm)
+	}
+
+	var targetPSR uint32
+	if psrDestBit == 0 { // CPSR
+		targetPSR = c.Registers.CPSR
+	} else { // SPSR_<current mode>
+		if c.Registers.GetMode() == USRMode || c.Registers.GetMode() == SYSMode {
+			panic(fmt.Sprintf("MSR: SPSR does not exist in current mode (%d)", c.Registers.GetMode()))
+		}
+		targetPSR = c.Registers.GetSPSR()
+	}
+
+	currentPSRValue := targetPSR
+	newPSRValue := currentPSRValue
+
+	// Apply field masks
+	if writeFlags {
+		newPSRValue = (newPSRValue & ^PSR_FLAGS) | (operandValue & PSR_FLAGS)
+	}
+	if writeStatus {
+		// Documentation states "reserved, don't change" for status field.
+		// However, a real MSR might try to write to it, and the hardware
+		// would simply ignore the write for those bits. For an emulator,
+		// we can choose to warn, ignore, or strictly adhere to "don't change".
+		// For now, let's allow the write but acknowledge the documentation.
+		dbg.Printf("MSR: Attempting to write to reserved status field (bits 23-16)\n")
+		newPSRValue = (newPSRValue & ^PSR_STATUS) | (operandValue & PSR_STATUS)
+	}
+	if writeExtension {
+		// Documentation states "reserved, don't change" for extension field.
+		dbg.Printf("MSR: Attempting to write to reserved extension field (bits 15-8)\n")
+		newPSRValue = (newPSRValue & ^PSR_EXTENSION) | (operandValue & PSR_EXTENSION)
+	}
+	if writeControl {
+		// In non-privileged mode (user mode): only condition code bits of CPSR can be changed, control bits can’t.
+		if psrDestBit == 0 && c.Registers.GetMode() == USRMode { // Writing to CPSR in User Mode
+			// Only allow writing to flags (bits 31-24)
+			dbg.Printf("MSR: Attempting to write to control field (bits 7-0) in User mode. Only flags are writable.\n")
+			// Only the condition code bits should be updated.
+			// The flags field is part of PSR_FLAGS, which is already handled by writeFlags.
+			// No action needed here to restrict control field write in User mode as we only update flags.
+			// If we wanted to strictly prevent it, we would mask it out.
+		} else {
+			newPSRValue = (newPSRValue & ^PSR_CONTROL) | (operandValue & PSR_CONTROL)
+		}
+	}
+
+	// The T-bit (bit 5) may not be changed; for THUMB/ARM switching use BX instruction.
+	// Ensure the T-bit remains unchanged.
+	// Preserve the original T-bit from the current PSR value.
+	tBitOriginal := (currentPSRValue >> 5) & 0x1
+	newPSRValue = (newPSRValue &^ (1 << 5)) | (tBitOriginal << 5)
+
+	// Update the target PSR
+	// TODO what the fuck. Why is this not a pointer?
+	targetPSR = newPSRValue
+
+	dbg.Printf("MSR: Writing 0x%08X to Psr (PsrDest: %d, Flags: %t, Status: %t, Ext: %t, Control: %t)\n",
+		operandValue, psrDestBit, writeFlags, writeStatus, writeExtension, writeControl)
+	dbg.Printf("MSR: New PSR value: 0x%08X\n", targetPSR)
 }
 
 // #############
 // ### Utils ###
 // #############
 
-func applyShift(value uint32, shiftType ARMShiftType, shiftAmount uint32) uint32 {
-	switch shiftType {
-	case LSL: // LSL
-		return value << shiftAmount
-	case LSR: // LSR
-		if shiftAmount == 0 {
-			return 0 // LSR #32 means the result is 0
+// applyShift performs the specified barrel shift operation on a value.
+// It returns the shifted value and the carry-out bit from the shifter.
+// This function handles various shift types and special shift amounts as per ARM architecture.
+func (c *CPU) applyShift(value uint32, shiftType ARMShiftType, shiftAmount uint32) (uint32, bool) {
+	carryOut := false
+
+	if shiftAmount == 0 {
+		if shiftType == ROR { // ROR #0 is RRX (Rotate Right Extended)
+			carryOut = (value & 0x1) == 1                                                // Bit 0 of original value becomes C flag
+			value = (value >> 1) | uint32(convert.BoolToInt(c.Registers.GetFlagC())<<31) // Old C flag into bit 31
 		}
-		return value >> shiftAmount
-	case ASR: // ASR
-		if shiftAmount == 0 {
-			// ASR #32 replicates sign bit
-			if value&0x80000000 != 0 {
-				return 0xFFFFFFFF
-			}
-			return 0
-		}
-		return uint32(int32(value) >> shiftAmount) // Signed shift
-	case ROR: // ROR
-		shiftAmount %= 32
-		return (value >> shiftAmount) | (value << (32 - shiftAmount))
+		// For LSL/LSR/ASR #0, no shift, carry is unchanged by shifter.
+		return value, carryOut
 	}
-	return value // Default case, should not be hit
+
+	switch shiftType {
+	case LSL: // Logical Shift Left
+		if shiftAmount >= 32 {
+			if shiftAmount == 32 {
+				carryOut = (value & 0x1) == 1 // Bit 0 of original value is shifted out
+			} else { // shiftAmount > 32
+				carryOut = false // Result is 0, carry is 0
+			}
+			value = 0
+		} else {
+			carryOut = (value>>(32-shiftAmount))&0x1 == 1
+			value <<= shiftAmount
+		}
+	case LSR: // Logical Shift Right
+		if shiftAmount >= 32 {
+			if shiftAmount == 32 {
+				carryOut = (value>>31)&0x1 == 1 // Bit 31 of original value is shifted out
+			} else { // shiftAmount > 32
+				carryOut = false // Result is 0, carry is 0
+			}
+			value = 0
+		} else {
+			carryOut = (value>>(shiftAmount-1))&0x1 == 1
+			value >>= shiftAmount
+		}
+	case ASR: // Arithmetic Shift Right
+		if shiftAmount >= 32 {
+			carryOut = (value>>31)&0x1 == 1 // Bit 31 of original value is shifted out
+			if carryOut {                   // If sign bit was 1, result is all 1s
+				value = 0xFFFFFFFF
+			} else { // If sign bit was 0, result is all 0s
+				value = 0
+			}
+		} else {
+			carryOut = (value>>(shiftAmount-1))&0x1 == 1
+			// Arithmetic shift: preserve sign bit
+			if (value & 0x80000000) != 0 { // If negative (MSB is 1)
+				value = (value >> shiftAmount) | (0xFFFFFFFF << (32 - shiftAmount))
+			} else { // If positive (MSB is 0)
+				value >>= shiftAmount
+			}
+		}
+	case ROR: // Rotate Right
+		// ROR by N is equivalent to ROR by N % 32. If N % 32 is 0, it's ROR #0 (RRX).
+		actualShift := shiftAmount % 32
+		if actualShift == 0 { // ROR #0 is RRX, handled by the initial if block
+			return c.applyShift(value, ROR, 0) // Recurse for RRX
+		}
+		// For ROR, the carry is the bit that was shifted out of bit 0.
+		// This is the bit that was at position (actualShift - 1) of the original value.
+		carryOut = (value>>(actualShift-1))&0x1 == 1
+		value = (value >> actualShift) | (value << (32 - actualShift))
+	}
+	return value, carryOut
+}
+
+// calcOp2 calculates the second operand (Operand2) for Data Processing instructions.
+// It handles both immediate and register-based operands, including shifts.
+// It returns the calculated operand value and the carry-out from the barrel shifter.
+func (c *CPU) calcOp2(instruction ARMInstruction) (uint32, bool) {
+	if instruction.I { // Immediate operand
+		// The immediate value (instruction.Immediate) is already rotated by DecodeARMInstruction.
+		// For immediate operands, the carry-out from the barrel shifter is typically only
+		// relevant for MOV/MVN instructions (when S bit is set).
+		// The carry for ROR is the bit that was shifted out of bit 0 of the original 8-bit value,
+		// which ends up at bit 31 of the rotated 32-bit result.
+		carryOut := false
+		if instruction.RotateImm != 0 { // If rotation occurred, the MSB of the result is the carry-out
+			carryOut = (instruction.Immediate>>31)&0x1 == 1
+		}
+		return instruction.Immediate, carryOut
+	} else { // Register operand
+		rmVal := c.Registers.GetReg(instruction.Rm)
+		var shiftAmount uint32
+
+		// Determine if the shift amount is an immediate value or from a register.
+		// DecodeARMInstruction already populates either ShiftImm or Rs.
+		if instruction.Rs != 0 { // If Rs is non-zero, it implies a register shift (bit 4 was 1)
+			shiftAmount = c.Registers.GetReg(instruction.Rs) & 0xFF // Only lower 8 bits of Rs are used for shift amount
+		} else { // Otherwise, it's an immediate shift amount (bit 4 was 0)
+			shiftAmount = uint32(instruction.ShiftImm)
+		}
+
+		// Perform the shift and get the carry-out from the barrel shifter.
+		shiftedVal, carryOut := c.applyShift(rmVal, instruction.ShiftType, shiftAmount)
+		return shiftedVal, carryOut
+	}
 }
