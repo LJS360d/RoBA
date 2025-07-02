@@ -9,7 +9,6 @@ import (
 	"GoBA/internal/interfaces"
 	"GoBA/internal/io"
 	"GoBA/internal/joypad"
-	"GoBA/internal/memory"
 	"GoBA/internal/ppu"
 	"GoBA/internal/timer"
 	"GoBA/util/dbg"
@@ -66,9 +65,9 @@ const (
 // Bus connects the CPU to various memory-mapped components.
 type Bus struct {
 	interfaces.BusInterface
-	BIOS  *memory.BIOS
-	EWRAM *memory.EWRAM // On-board Work RAM
-	IWRAM *memory.IWRAM // On-chip Work RAM
+	BIOS  interfaces.MemoryDevice
+	EWRAM interfaces.MemoryDevice // On-board Work RAM
+	IWRAM interfaces.MemoryDevice // On-chip Work RAM
 
 	// many registers have side effects.
 	// main I/O block (0x04000000 - 0x040003FF)
@@ -89,7 +88,7 @@ type Bus struct {
 
 // NewBus creates a new Bus instance.
 // Components like PPU and Cartridge should be initialized and passed in.
-func NewBus(bios *memory.BIOS, ewram *memory.EWRAM, iwram *memory.IWRAM, ppu *ppu.PPU, cart *cartridge.Cartridge, ioRegs *io.IORegs) *Bus {
+func NewBus(bios interfaces.MemoryDevice, ewram interfaces.MemoryDevice, iwram interfaces.MemoryDevice, ppu *ppu.PPU, cart *cartridge.Cartridge, ioRegs *io.IORegs) *Bus {
 	if bios == nil || ewram == nil || iwram == nil || ppu == nil || cart == nil {
 		log.Fatalf("Bus: Cannot initialize with nil components")
 	}

@@ -16,6 +16,7 @@ const (
 	ARMITMultiply          ARMInstructionType = "Multiply"
 	ARMITTransferMRS       ARMInstructionType = "PSR Transfer (MRS)"
 	ARMITTransferMSR       ARMInstructionType = "PSR Transfer (MSR)"
+	ARMITBranchExchange    ARMInstructionType = "Branch and Exchange"
 	ARMITUndefined         ARMInstructionType = "Undefined" // For instructions not yet implemented or unknown
 )
 
@@ -126,15 +127,94 @@ func DecodeInstruction_Arm(instruction uint32) (ARMInstruction, error) {
 		Cond: ARMCondition((instruction >> 28) & 0xF), // Condition field (bits 31-28)
 	}
 
-	// Extract primary opcode bits to determine instruction type
-	// Bits 27-20 are crucial for identifying the instruction format.
-	// Reference: GBATEK "ARM Binary Opcode Format"
-	opcode27_24 := (instruction >> 24) & 0xF
+	// For robust decoding, examine specific bit patterns with masks.
+	// The order of checks is crucial for overlapping patterns.
+	// More specific patterns should be checked before more general ones.
+
+	// Bits 27-20 are very important for primary instruction classification.
+	// Refer to the GBATEK "ARM Binary Opcode Format"
+	// Example: (instruction & 0x0F000000) >> 24 extracts bits 27-24 (top 4 bits of opcode)
 
 	switch {
-	// Data Processing and PSR Transfer (MRS/MSR)
-	// Format: Cond | 00 | I | Opcode | S | Rn | Rd | Operand2
-	case (opcode27_24&0xC == 0x0): // Bits 27-26 are '00'
+	// --- Type 1: Software Interrupt (SWI) ---
+	// Cond | 1111 | SWI_Comment
+	// Mask: 0xFF000000 (bits 31-24 are 1111xxxx)
+	case (instruction>>24)&0xFF == 0xF: // Check if bits 27-24 are 1111 (0xF)
+		decoded.Type = ARMITSWI
+		decoded.SWIComment = instruction & 0xFFFFFF // 24-bit comment field (bits 23-0)
+
+	// --- Type 2: Branch and Exchange (BX, BLX - Register variant) ---
+	// Cond | 0001 0010 | 1111 1111 | 1111 | 0001 | Rm (BX)
+	// Cond | 0001 0010 | 1111 1111 | 1111 | 0011 | Rm (BLX)
+	// Unique pattern: bits 27-4 are `00010010111111111111` and bit 4 is `1`
+	// Mask: 0x0FFFFFD0. Compare with 0x012FFF10 for BX/BLX.
+	case (instruction&0x0FFFFFF0 == 0x012FFF10) || (instruction&0x0FFFFFF0 == 0x012FFF30): // Also check BLX reg form
+		decoded.Type = ARMITBranchExchange // New type for clarity
+		decoded.Rm = uint8(instruction & 0xF)
+		decoded.Exchange = true
+		if ((instruction >> 5) & 0x1) == 1 { // Bit 5 is 'L' for BLX
+			decoded.Link = true
+		}
+
+	// --- Type 3: Multiply and Multiply Long ---
+	// Cond | 0000 | A | S | Rd | Rn | Rs | 1001 | Rm
+	// Cond | 0000 | 1 | A | S | RdHi | RdLo | Rs | 1001 | Rm (Long Multiply)
+	// Unique pattern: bits 27-24 are '0000' AND bits 7-4 are '1001'
+	case ((instruction>>24)&0xF == 0x0) && ((instruction>>4)&0xF == 0x9):
+		decoded.Type = ARMITMultiply
+		decoded.A = ((instruction >> 21) & 0x1) == 1 // Accumulate bit (bit 21)
+		decoded.S = ((instruction >> 20) & 0x1) == 1 // Set Condition Codes flag (bit 20)
+
+		// Check for Long Multiply (bits 23-22: 01, type 4-7, implies bits 27-24=0000)
+		if ((instruction >> 22) & 0x3) == 0x1 { // If bits 23-22 are '01'
+			// This covers UMULL, UMLAL, SMULL, SMLAL (opcodes 0x4-0x7)
+			decoded.RdHi = uint8((instruction >> 16) & 0xF) // Bits 19-16
+			decoded.RdLo = uint8((instruction >> 12) & 0xF) // Bits 15-12
+			decoded.Rs = uint8((instruction >> 8) & 0xF)    // Bits 11-8
+			decoded.Rm = uint8(instruction & 0xF)           // Bits 3-0
+			decoded.Rn = 0                                  // Rn field is not used as a source register for these
+		} else { // Standard Multiply (MUL, MLA)
+			decoded.Rd = uint8((instruction >> 16) & 0xF) // Destination register (bits 19-16)
+			decoded.Rn = uint8((instruction >> 12) & 0xF) // Accumulate register (bits 15-12 for MLA, not used for MUL)
+			decoded.Rs = uint8((instruction >> 8) & 0xF)  // Operand Register (bits 11-8)
+			decoded.Rm = uint8(instruction & 0xF)         // Second operand register (bits 3-0)
+		}
+
+	// --- Type 4: PSR Transfer (MRS/MSR) ---
+	// These share the '00' prefix (bits 27-26) with Data Processing,
+	// but have specific patterns in bits 24-21 and 15-0.
+	// MRS: Cond | 00101 | S (0) | Rn (1111) | Rd | 0000_0000_0000
+	// MSR (Reg): Cond | 00100 | S (0) | Field (19-16) | 0000 | 0000_0000_Rm
+	// MSR (Imm): Cond | 00110 | S (0) | Field (19-16) | Imm12 (Rotate | Immediate)
+	// A common mask to identify them is (instruction & 0x0FB0F000)
+	case (instruction&0x0FB0F000 == 0x01000000) || (instruction&0x0FE00000 == 0x03200000): // More precise checks for MSR Imm and MSR Reg/MRS
+		// Check for MRS (Move from PSR to Register)
+		// Pattern: Cond | 0010100 | 1111 | Rd | 000000000000
+		if (instruction&0x0FF000F0 == 0x01000000) && ((instruction>>21)&0x7) == 0x5 { // Check for 00101_00 in bits 27-20 and 0000 in bits 11-8
+			decoded.Type = ARMITTransferMRS
+			decoded.Rd = uint8((instruction >> 12) & 0xF)
+			// No other relevant fields to parse for MRS
+		} else if ((instruction>>21)&0x7 == 0x4) || ((instruction>>21)&0x7 == 0x6) { // MSR (Move to PSR)
+			// MSR Register: Cond | 0010000 | Field | 0000 | 0000_Rm
+			// MSR Immediate: Cond | 0011000 | Field | Rotate | Imm8
+			decoded.Type = ARMITTransferMSR
+			decoded.I = ((instruction >> 25) & 0x1) == 1 // Immediate or Register source
+			// The field mask bits (19-16) are implied for MSR
+			if decoded.I {
+				decoded.RotateImm = uint8((instruction >> 8) & 0xF)
+				imm8 := instruction & 0xFF
+				decoded.Immediate = (imm8 >> (decoded.RotateImm * 2)) | (imm8 << (32 - (decoded.RotateImm * 2)))
+			} else {
+				decoded.Rm = uint8(instruction & 0xF)
+			}
+		} else {
+			return ARMInstruction{}, fmt.Errorf("unhandled PSR Transfer variant: 0x%08X", instruction)
+		}
+
+	// --- Type 5: Data Processing (General) ---
+	// Cond | 00 | I | Opcode | S | Rn | Rd | Operand2
+	// This should come after more specific instructions that also start with '00' in bits 27-26.
+	case (instruction>>26)&0x3 == 0x0: // Bits 27-26 are '00'
 		decoded.Type = ARMITDataProcessing
 		decoded.I = ((instruction >> 25) & 0x1) == 1                             // Immediate operand flag (bit 25)
 		decoded.OpcodeDP = ARMDataProcessingOperation((instruction >> 21) & 0xF) // Opcode (bits 24-21)
@@ -143,9 +223,10 @@ func DecodeInstruction_Arm(instruction uint32) (ARMInstruction, error) {
 		decoded.Rd = uint8((instruction >> 12) & 0xF)                            // Destination register (bits 15-12)
 
 		if decoded.I { // Immediate as 2nd Operand
-			decoded.RotateImm = uint8((instruction >> 8) & 0xF)                                              // Rotate amount (bits 11-8)
-			imm8 := instruction & 0xFF                                                                       // 8-bit immediate value (bits 7-0)
-			decoded.Immediate = (imm8 >> (decoded.RotateImm * 2)) | (imm8 << (32 - (decoded.RotateImm * 2))) // ROR operation
+			decoded.RotateImm = uint8((instruction >> 8) & 0xF) // Rotate amount (bits 11-8)
+			imm8 := instruction & 0xFF                          // 8-bit immediate value (bits 7-0)
+			// Compute the rotated immediate value
+			decoded.Immediate = (imm8 >> (decoded.RotateImm * 2)) | (imm8 << (32 - (decoded.RotateImm * 2)))
 		} else { // Register as 2nd Operand
 			decoded.Rm = uint8(instruction & 0xF)                      // Second operand register (bits 3-0)
 			decoded.ShiftType = ARMShiftType((instruction >> 5) & 0x3) // Shift type (bits 6-5)
@@ -153,61 +234,15 @@ func DecodeInstruction_Arm(instruction uint32) (ARMInstruction, error) {
 				decoded.ShiftImm = uint8((instruction >> 7) & 0x1F) // Shift immediate (bits 11-7)
 			} else { // Register shift
 				decoded.Rs = uint8((instruction >> 8) & 0xF) // Shift register (bits 11-8)
-				// Bit 7 must be 0 for register shift, bit 4 must be 1.
 				if ((instruction >> 7) & 0x1) != 0 {
 					return ARMInstruction{}, fmt.Errorf("invalid instruction: bit 7 must be 0 for register shift")
 				}
 			}
 		}
 
-		// Handle MRS (Move from PSR to Register) and MSR (Move to PSR from Register/Immediate)
-		// These share the 00b at bits 27-26, but have specific patterns in bits 24-20 and 19-16.
-		// MRS: Cond | 00 | 0 | 10 | 0 | Psr | 1111 | Rd | 0000 0000 0000
-		// MSR (Reg): Cond | 00 | 0 | 10 | 0 | Field | 0000 | Rm | 0000 0000 0000
-		// MSR (Imm): Cond | 00 | 1 | 10 | 0 | Field | 0000 | Immediate
-		if ((instruction >> 23) & 0x3) == 0x2 { // Bits 24-23 are '10'
-			if ((instruction >> 21) & 0x1) == 0 { // Bit 21 is '0' for MRS
-				if ((instruction>>16)&0xF) == 0xF && ((instruction>>4)&0xFF) == 0 { // Check for MRS specific bits
-					decoded.Type = ARMITTransferMRS
-					// Rd is already parsed
-					// Psr (CPSR/SPSR) is bit 22
-					// No other fields are relevant here
-				} else {
-					return ARMInstruction{}, fmt.Errorf("invalid instruction: MRS format mismatch")
-				}
-			} else { // Bit 21 is '1' for MSR
-				decoded.Type = ARMITTransferMSR
-				// Field mask (bits 19-16) and operand (Rm or Immediate)
-				// No other fields are relevant here for a generic decoder
-			}
-		}
-
-	// Multiply (MUL, MLA, UMULL, UMLAL, SMULL, SMLAL)
-	// Format: Cond | 0000 | A | S | Rd | Rn | Rs | 1001 | Rm
-	case (opcode27_24&0xE == 0x0) && ((instruction>>4)&0xF == 0x9): // Bits 27-24 are '0000', bits 7-4 are '1001'
-		decoded.Type = ARMITMultiply
-		decoded.A = ((instruction >> 21) & 0x1) == 1  // Accumulate bit (bit 21)
-		decoded.S = ((instruction >> 20) & 0x1) == 1  // Set Condition Codes flag (bit 20)
-		decoded.Rd = uint8((instruction >> 16) & 0xF) // Destination register (bits 19-16)
-		decoded.Rn = uint8((instruction >> 12) & 0xF) // Accumulate register (bits 15-12), or RdLo for long multiply
-		decoded.Rs = uint8((instruction >> 8) & 0xF)  // Operand Register (bits 11-8)
-		decoded.Rm = uint8(instruction & 0xF)         // Second operand register (bits 3-0)
-
-		// Differentiate between MUL/MLA and long multiplies based on bits 24-21
-		mulOpcode := (instruction >> 21) & 0xF
-		if mulOpcode == 0x0 || mulOpcode == 0x1 { // MUL or MLA
-			// Rd, Rn, Rs, Rm are already parsed
-		} else if mulOpcode >= 0x4 && mulOpcode <= 0x7 { // UMULL, UMLAL, SMULL, SMLAL
-			decoded.RdHi = decoded.Rd // RdHi is bits 19-16
-			decoded.RdLo = decoded.Rn // RdLo is bits 15-12
-			decoded.Rn = 0            // Rn is not used in these instructions
-		} else {
-			return ARMInstruction{}, fmt.Errorf("invalid multiply instruction opcode: %x", mulOpcode)
-		}
-
-	// Load/Store Single Data Transfer
-	// Format: Cond | 01 | P | U | B | W | L | Rn | Rd | Offset/Shifted_Rm
-	case (opcode27_24&0xC == 0x4): // Bits 27-26 are '01'
+	// --- Type 6: Load/Store Single Data Transfer ---
+	// Cond | 01 | P | U | B | W | L | Rn | Rd | Offset/Shifted_Rm
+	case (instruction>>26)&0x3 == 0x1: // Bits 27-26 are '01'
 		decoded.Type = ARMITLoadStore
 		decoded.P = ((instruction >> 24) & 0x1) == 1  // Pre/Post-indexed addressing (bit 24)
 		decoded.U = ((instruction >> 23) & 0x1) == 1  // Up/Down (add/subtract offset) (bit 23)
@@ -217,21 +252,20 @@ func DecodeInstruction_Arm(instruction uint32) (ARMInstruction, error) {
 		decoded.Rn = uint8((instruction >> 16) & 0xF) // Base register (bits 19-16)
 		decoded.Rd = uint8((instruction >> 12) & 0xF) // Source/Destination register (bits 15-12)
 
-		if ((instruction >> 25) & 0x1) == 0 { // Immediate offset
+		if ((instruction >> 25) & 0x1) == 0 { // Immediate offset (bit 25 is 0)
 			decoded.Offset = instruction & 0xFFF // 12-bit immediate offset (bits 11-0)
-		} else { // Register offset with optional shift
+		} else { // Register offset with optional shift (bit 25 is 1)
 			decoded.Rm = uint8(instruction & 0xF)                      // Register offset (bits 3-0)
 			decoded.ShiftType = ARMShiftType((instruction >> 5) & 0x3) // Shift type (bits 6-5)
 			decoded.ShiftImm = uint8((instruction >> 7) & 0x1F)        // Shift immediate (bits 11-7)
-			// Bit 4 must be 0 for this format
-			if ((instruction >> 4) & 0x1) != 0 {
-				return ARMInstruction{}, fmt.Errorf("invalid instruction: bit 4 must be 0 for register offset with shift")
+			if ((instruction >> 4) & 0x1) != 0 {                       // Bit 4 must be 0 for this format (register as offset, not register with shift as offset)
+				return ARMInstruction{}, fmt.Errorf("invalid instruction: bit 4 must be 0 for register offset with shift in LDR/STR")
 			}
 		}
 
-	// Block Data Transfer (LDM, STM)
-	// Format: Cond | 100 | P | U | S | W | L | Rn | Register_List
-	case (opcode27_24&0xE == 0x8): // Bits 27-25 are '100'
+	// --- Type 7: Block Data Transfer (LDM, STM) ---
+	// Cond | 100 | P | U | S | W | L | Rn | Register_List
+	case (instruction>>25)&0x7 == 0x4: // Bits 27-25 are '100'
 		decoded.Type = ARMITBlockDataTransfer
 		decoded.P = ((instruction >> 24) & 0x1) == 1        // Pre/Post-indexed addressing (bit 24)
 		decoded.U = ((instruction >> 23) & 0x1) == 1        // Up/Down (add/subtract offset) (bit 23)
@@ -241,9 +275,9 @@ func DecodeInstruction_Arm(instruction uint32) (ARMInstruction, error) {
 		decoded.Rn = uint8((instruction >> 16) & 0xF)       // Base register (bits 19-16)
 		decoded.RegisterList = uint16(instruction & 0xFFFF) // 16-bit register list (bits 15-0)
 
-	// Branch and Branch with Link (B, BL)
-	// Format: Cond | 101 | L | Offset
-	case (opcode27_24&0xE == 0xA): // Bits 27-25 are '101'
+	// --- Type 8: Branch and Branch with Link (B, BL) ---
+	// Cond | 101 | L | Offset
+	case (instruction>>25)&0x7 == 0x5: // Bits 27-25 are '101'
 		decoded.Type = ARMITBranch
 		decoded.Link = ((instruction >> 24) & 0x1) == 1 // Link flag (bit 24)
 		// 24-bit signed offset (bits 23-0)
@@ -254,28 +288,14 @@ func DecodeInstruction_Arm(instruction uint32) (ARMInstruction, error) {
 		}
 		decoded.OffsetBranch = offset
 
-	// Software Interrupt (SWI)
-	// Format: Cond | 1111 | SWI_Comment
-	case (opcode27_24&0xF == 0xF): // Bits 27-24 are '1111'
-		decoded.Type = ARMITSWI
-		decoded.SWIComment = instruction & 0xFFFFFF // 24-bit comment field (bits 23-0)
-
-	// Branch and Exchange (BX, BLX)
-	// Format: Cond | 0001 0010 | 1111 1111 | 1111 | 0001 | Rm (for BX)
-	// Format: Cond | 0001 0010 | 1111 1111 | 1111 | 0011 | Rm (for BLX register)
-	// Note: BLX immediate has a different format (Cond | 1111 0 | Offset | 1 | Offset_low)
-	case (instruction&0x0FFFFF00 == 0x012FFF00) && ((instruction>>4)&0x1) == 1: // Check for BX/BLX register format
-		decoded.Type = ARMITBranch
-		decoded.Rm = uint8(instruction & 0xF) // Register containing target address (bits 3-0)
-		decoded.Exchange = true               // Indicates BX or BLX
-		// Bit 5 indicates BLX (1) or BX (0)
-		if ((instruction >> 5) & 0x1) == 1 {
-			decoded.Link = true // It's a BLX instruction
-		}
+	// --- Add other instruction types here as needed, following the priority of unique masks. ---
+	// The Undefined instruction pattern 011...1... (bits 27-24 are 0x7 or 0xE depending on the exact pattern)
+	// Cond | 011 | ... | 1 | ... | (Undefined)
+	// Cond | 110 | P | U | N | W | L | Rn | CRd | CP# | OffsetCoProc  (Coprocessor Data Transfer)
+	// Cond | 1110 | ... (Coprocessor Data Operation)
+	// Cond | 1110 | ... (Coprocessor Register Transfer)
 
 	default:
-		// If none of the above common patterns match, it's an undefined or unimplemented instruction.
-		// You can expand this section to cover more instruction types as needed.
 		decoded.Type = ARMITUndefined
 		return decoded, fmt.Errorf("unsupported or undefined ARM instruction: 0x%08X", instruction)
 	}

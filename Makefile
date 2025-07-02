@@ -29,7 +29,7 @@ build:
 
 run: BUILD_TAGS=debug
 run: build
-	./$(BINARY_NAME) -rom=test/emerald.gba
+	./$(BINARY_NAME) -rom=test/arm.gba
 
 # Clean the binary
 clean:

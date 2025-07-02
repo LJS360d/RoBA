@@ -7,7 +7,7 @@ type IWRAM struct {
 	data []byte
 }
 
-func NewIWRAM() *IWRAM {
+func NewIWRAM() interfaces.MemoryDevice {
 	return &IWRAM{
 		data: make([]byte, IWRAM_SIZE),
 	}

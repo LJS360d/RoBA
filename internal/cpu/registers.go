@@ -77,7 +77,7 @@ type Registers struct {
 // NewRegisters creates and initializes a new Registers struct.
 // CPU typically starts in Supervisor mode after reset.
 // BIOS entry point is 0x00000000. PC is usually set after loading BIOS/ROM.
-func NewRegisters() *Registers {
+func NewRegisters() interfaces.RegistersInterface {
 	regs := &Registers{
 		// currentMode will be derived from CPSR, but initialize for clarity
 		currentMode: SVCMode,
@@ -373,6 +373,22 @@ func (r *Registers) SetFIQDisabled(disabled bool) {
 	} else {
 		r.CPSR &^= (1 << 6) // Clear F bit
 	}
+}
+
+func (r *Registers) GetCPSR() uint32 {
+	return r.CPSR
+}
+
+func (r *Registers) SetCPSR(value uint32) {
+	r.CPSR = value
+}
+
+func (r *Registers) GetPC() uint32 {
+	return r.PC
+}
+
+func (r *Registers) SetPC(value uint32) {
+	r.PC = value
 }
 
 // IsIRQDisabled returns true if I flag in CPSR is set (IRQ disabled).

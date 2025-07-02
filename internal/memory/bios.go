@@ -14,7 +14,7 @@ type BIOS struct {
 }
 
 // NewBIOS loads the GBA BIOS ROM from the specified file path.
-func NewBIOS() *BIOS {
+func NewBIOS() interfaces.MemoryDevice {
 	return &BIOS{
 		data: embedded.BIOSData,
 	}
