@@ -1,6 +1,7 @@
 // main.rs
 use clap::Parser;
 use eframe::egui;
+use egui::IconData;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -184,11 +185,13 @@ impl eframe::App for GbaApp {
 fn main() -> eframe::Result<()> {
     // Parse command-line arguments.
     let args = Args::parse();
-
+    let icon = IconData::default(); // from_png_bytes(include_bytes!("../assets/icon.png")).unwrap();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1024.0, 768.0])
-            .with_title("RoBA - GBA Emulator"),
+            .with_title("RoBA - GBA Emulator")
+            .with_app_id("RoBA")
+            .with_icon(icon),
         ..Default::default()
     };
 

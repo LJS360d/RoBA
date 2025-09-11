@@ -1,4 +1,5 @@
-# Default: build everything in debug mode
+# TODO adapt for non linux platforms
+
 default:
     just build-all
 
@@ -6,23 +7,19 @@ default:
 # Build Commands
 # --------------------
 
-# Debug + release workspace
+alias build := build-all
+alias b := build-all
+
 build-all:
     cargo build --workspace
 build-all-release:
     cargo build --workspace --release
 
-# Core crate
-build-core:
-    cargo build -p core
-build-core-release:
-    cargo build -p core --release
+bundle:
+    cd frontends/desktop && cargo bundle --target x86_64-unknown-linux-gnu
 
-# Desktop (Linux native debug + release)
-build-desktop:
-    cargo build -p desktop
-build-desktop-release:
-    cargo build -p desktop --release
+run-bundle: bundle
+    ./target/x86_64-unknown-linux-gnu/debug/bundle/appimage/desktop_*.AppImage
 
 # WASM build
 # Requires: rustup target add wasm32-unknown-unknown
@@ -36,7 +33,8 @@ build-wasm-release:
 # --------------------
 
 # Alias for run-desktop
-run: run-desktop
+alias run := run-desktop
+alias r := run-desktop
 
 run-desktop:
     cargo run -p desktop
@@ -48,7 +46,8 @@ run-desktop-release:
 # Tests
 # --------------------
 
-test: test-all
+alias test := test-all
+alias t := test-all
 
 test-all:
     cargo test --workspace
