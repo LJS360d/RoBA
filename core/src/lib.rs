@@ -40,12 +40,24 @@ impl Emulator {
         // Advance enough cycles to reach VBlank and render a frame in minimal PPU
         let cycles_to_vblank = self.ppu.cycles_until_vblank();
         self.ppu.step(cycles_to_vblank + 4);
+        // Update Bus access permissions based on current PPU state
+        self.bus.set_access_permissions(
+            self.ppu.can_access_vram(),
+            self.ppu.can_access_palette(),
+            self.ppu.can_access_oam(),
+        );
         // Seed palette[0] if empty to see a visible color (temporary until IO wiring)
         if self.bus.mem.palette[0] == 0 && self.bus.mem.palette[1] == 0 {
             self.bus.mem.palette[0] = 0x00;
             self.bus.mem.palette[1] = 0x7C; // RGB555 red 0x7C00 in LE
         }
         self.ppu.render_frame_with_bus(&mut self.bus);
+        // Update permissions again after rendering (PPU may have changed state)
+        self.bus.set_access_permissions(
+            self.ppu.can_access_vram(),
+            self.ppu.can_access_palette(),
+            self.ppu.can_access_oam(),
+        );
         framebuffer_rgb555_to_rgba(&mut self.rgba_frame, self.ppu.framebuffer());
     }
     pub fn load_rom(&mut self, rom_path: &PathBuf) {
