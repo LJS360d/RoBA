@@ -116,17 +116,25 @@ struct ArmPipeline {
     valid: bool,
 }
 
+#[derive(Default, Clone)]
+struct ThumbPipeline {
+    fetch: u16,
+    decode: u16,
+    valid: bool,
+}
+
 pub struct Cpu {
     // Unbanked base registers hold the current view for r0..r15
     regs: [u32; 16],
     cpsr: Cpsr,
     banked: BankedRegs,
     arm_pipe: ArmPipeline,
+    thumb_pipe: ThumbPipeline,
 }
 
 impl Cpu {
     pub fn new() -> Self {
-        let mut cpu = Self { regs: [0; 16], cpsr: Cpsr::new(), banked: BankedRegs::new(), arm_pipe: ArmPipeline::default() };
+        let mut cpu = Self { regs: [0; 16], cpsr: Cpsr::new(), banked: BankedRegs::new(), arm_pipe: ArmPipeline::default(), thumb_pipe: ThumbPipeline::default() };
         cpu.cpsr.set_mode(CpuMode::System);
         cpu.regs[13] = 0; // SP
         cpu.regs[15] = 0; // PC
@@ -143,6 +151,15 @@ impl Cpu {
 
     pub fn mode(&self) -> CpuMode { self.cpsr.mode() }
     pub fn state(&self) -> CpuState { self.cpsr.state() }
+    pub fn set_state(&mut self, state: CpuState) {
+        let old_state = self.cpsr.state();
+        self.cpsr.set_state(state);
+        // Flush pipeline on state change
+        if old_state != state {
+            self.arm_pipe.valid = false;
+            self.thumb_pipe.valid = false;
+        }
+    }
 
     pub fn spsr(&self) -> Option<u32> { self.spsr_for_mode(self.mode()) }
     pub fn set_spsr(&mut self, value: u32) { self.set_spsr_for_mode(self.mode(), value); }
@@ -508,6 +525,51 @@ impl Cpu {
         }
     }
 
+    fn execute_arm_multiply_long(&mut self, instr: u32) {
+        let cond = (instr >> 28) & 0xF;
+        if !self.condition_passed(cond) { return; }
+        // Encoding: 00001 U A S RdHi RdLo Rs 1001 Rm
+        let u_signed = ((instr >> 22) & 1) != 0; // U bit: 0 unsigned, 1 signed
+        let accumulate = ((instr >> 21) & 1) != 0; // A bit
+        let s = ((instr >> 20) & 1) != 0; // S bit
+        let rd_hi = ((instr >> 16) & 0xF) as usize;
+        let rd_lo = ((instr >> 12) & 0xF) as usize;
+        let rs = ((instr >> 8) & 0xF) as usize;
+        let rm = (instr & 0xF) as usize;
+
+        let multiplicand_a = self.regs[rm];
+        let multiplicand_b = self.regs[rs];
+
+        let product: u128 = if u_signed {
+            let a = (multiplicand_a as i32) as i64 as i128;
+            let b = (multiplicand_b as i32) as i64 as i128;
+            (a * b) as u128
+        } else {
+            let a = multiplicand_a as u128;
+            let b = multiplicand_b as u128;
+            a.wrapping_mul(b)
+        };
+
+        let acc: u128 = if accumulate {
+            let hi = self.regs[rd_hi] as u128;
+            let lo = self.regs[rd_lo] as u128;
+            (hi << 32) | lo
+        } else { 0 };
+
+        let result = product.wrapping_add(acc);
+        let result_lo = (result & 0xFFFF_FFFF) as u32;
+        let result_hi = (result >> 32) as u32;
+
+        self.regs[rd_lo] = result_lo;
+        self.regs[rd_hi] = result_hi;
+
+        if s {
+            self.cpsr.set_n((result_hi >> 31) != 0);
+            self.cpsr.set_z(result == 0);
+            // C and V are undefined for long multiply on ARM7TDMI; leave unchanged
+        }
+    }
+
     pub fn pc(&self) -> u32 { self.regs[15] }
     pub fn set_pc(&mut self, value: u32) { self.regs[15] = value; }
 
@@ -522,7 +584,12 @@ impl Cpu {
                 self.arm_pipe.valid = true;
             }
             CpuState::Thumb => {
-                // Thumb not yet pipelined
+                let pc = self.pc() & !1;
+                let decode = bus.read16(pc) as u32;
+                let fetch = bus.read16(pc.wrapping_add(2)) as u32;
+                self.thumb_pipe.fetch = fetch as u16;
+                self.thumb_pipe.decode = decode as u16;
+                self.thumb_pipe.valid = true;
             }
         }
     }
@@ -561,8 +628,9 @@ impl Cpu {
                 self.regs[rd] = value;
             } else {
                 let aligned = address & !3;
-                let value = bus.read32(aligned);
-                // ARM: for aligned word load, direct; for misaligned, rotate. Here keep aligned only.
+                let raw = bus.read32(aligned);
+                let rotate = (address & 3) * 8;
+                let value = if rotate != 0 { raw.rotate_right(rotate) } else { raw };
                 self.regs[rd] = value;
             }
         } else {
@@ -570,7 +638,9 @@ impl Cpu {
                 bus.write8(address, (self.regs[rd] & 0xFF) as u8);
             } else {
                 let aligned = address & !3;
-                bus.write32(aligned, self.regs[rd]);
+                let rotate = (address & 3) * 8;
+                let value = if rotate != 0 { self.regs[rd].rotate_left(rotate) } else { self.regs[rd] };
+                bus.write32(aligned, value);
             }
         }
 
@@ -1091,7 +1161,7 @@ impl Cpu {
                 let new_state = if (rs_val & 1) != 0 { CpuState::Thumb } else { CpuState::Arm };
 
                 self.regs[15] = new_pc;
-                self.cpsr.set_state(new_state);
+                self.set_state(new_state);
                 // Pipeline flush will be handled by the step function
             }
             _ => {}
@@ -1481,6 +1551,9 @@ impl Cpu {
                     let before_pc = self.pc();
                     self.execute_arm_multiply(instr);
                     if self.pc() != before_pc { self.flush_pipeline(bus); }
+                } else if ((instr >> 23) & 0x1F) == 0b00001 && ((instr >> 4) & 0xF) == 0b1001 {
+                    // UMULL/UMLAL/SMULL/SMLAL
+                    self.execute_arm_multiply_long(instr);
                 } else if (((instr >> 23) & 0x1F) == 0b00010) && (((instr >> 21) & 0x3) == 0) && (((instr >> 4) & 0xF) == 0b1001) {
                     self.execute_arm_swp(bus, instr);
                 } else if (instr & 0x0FBF0FFF) == 0x010F0000
@@ -1512,10 +1585,20 @@ impl Cpu {
                 }
             }
             CpuState::Thumb => {
-                let pc = self.pc();
-                let instr16 = bus.read16(pc & !1) as u32;
-                self.regs[15] = pc.wrapping_add(2);
-                self.execute_thumb_instruction(bus, instr16);
+                if !self.thumb_pipe.valid { self.reset_pipeline(bus); }
+                let instr = self.thumb_pipe.decode as u32;
+                let current_pc = self.pc();
+                let next_pc = (current_pc & !1).wrapping_add(2);
+                let new_decode = self.thumb_pipe.fetch as u32;
+                let new_fetch = bus.read16(next_pc.wrapping_add(2)) as u32;
+                self.thumb_pipe.decode = new_decode as u16;
+                self.thumb_pipe.fetch = new_fetch as u16;
+                self.regs[15] = next_pc;
+
+                self.execute_thumb_instruction(bus, instr);
+                if self.pc() != next_pc {
+                    self.flush_pipeline(bus);
+                }
             }
         }
     }
@@ -1602,7 +1685,7 @@ mod tests {
     #[test]
     fn cpu_step_thumb_fetch_only() {
         let mut cpu = Cpu::new();
-        cpu.cpsr_mut().set_state(CpuState::Thumb);
+        cpu.set_state(CpuState::Thumb);
         let mut bus = MockBus::new(64);
         bus.mem[0] = 0x00;
         bus.mem[1] = 0xB5; // push {lr} example encoding upper byte pattern, unused
@@ -1695,7 +1778,7 @@ mod tests {
     #[test]
     fn thumb_bx_branch_exchange() {
         let mut cpu = Cpu::new();
-        cpu.cpsr_mut().set_state(CpuState::Thumb);
+        cpu.set_state(CpuState::Thumb);
         let mut bus = MockBus::new(64);
 
         // Set up return address with ARM state bit
@@ -2073,6 +2156,64 @@ mod tests {
     }
 
     #[test]
+    fn arm_umull_smull_and_umlal_smlal() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(64);
+
+        // UMULL r2:r1 = r3 * r4 (unsigned)
+        cpu.write_reg(3, 0xFFFF_FFFF);
+        cpu.write_reg(4, 2);
+        let umull = (0xE << 28) | (0b00001 << 23) | (0 << 22) | (0 << 21) | (1 << 20)
+            | (2 << 16) | (1 << 12) | (4 << 8) | (0b1001 << 4) | 3;
+        // SMULL r6:r5 = (-2) * 3 (signed)
+        cpu.write_reg(7, 0xFFFF_FFFE);
+        cpu.write_reg(8, 3);
+        let smull = (0xE << 28) | (0b00001 << 23) | (1 << 22) | (0 << 21) | (1 << 20)
+            | (6 << 16) | (5 << 12) | (8 << 8) | (0b1001 << 4) | 7;
+        // UMLAL r10:r9 += r1 * r2 (unsigned accumulate). Seed hi:lo = 1:1, r1=4, r2=5 -> +20 => 0x0000_0001_0000_0015
+        cpu.write_reg(9, 1);
+        cpu.write_reg(10, 1);
+        cpu.write_reg(1, 4);
+        cpu.write_reg(2, 5);
+        let umlal = (0xE << 28) | (0b00001 << 23) | (0 << 22) | (1 << 21) | (1 << 20)
+            | (10 << 16) | (9 << 12) | (2 << 8) | (0b1001 << 4) | 1;
+        // SMLAL r12:r11 += (-1) * (-1) (signed accumulate) -> +1
+        cpu.write_reg(11, 0xFFFF_FFFF);
+        cpu.write_reg(12, 0x7FFF_FFFF);
+        cpu.write_reg(13, 0xFFFF_FFFF);
+        cpu.write_reg(14, 0xFFFF_FFFF);
+        let smlal = (0xE << 28) | (0b00001 << 23) | (1 << 22) | (1 << 21) | (1 << 20)
+            | (12 << 16) | (11 << 12) | (14 << 8) | (0b1001 << 4) | 13;
+
+        // Write encodings at 0x4, 0x8, 0xC, 0x10 and step through
+        write32_le(&mut bus.mem, 4, umull);
+        write32_le(&mut bus.mem, 8, smull);
+        write32_le(&mut bus.mem, 12, umlal);
+        write32_le(&mut bus.mem, 16, smlal);
+        cpu.set_pc(0);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(1), 0xFFFF_FFFE);
+        assert_eq!(cpu.read_reg(2), 0x0000_0001);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(5), 0xFFFF_FFFA); // (-2)*3 = -6 -> lo
+        assert_eq!(cpu.read_reg(6), 0xFFFF_FFFF); // hi all ones for -6 sign-extended 64-bit
+
+        // Restore operands for UMLAL to avoid clobbering by prior UMULL
+        cpu.write_reg(1, 4);
+        cpu.write_reg(2, 5);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(9), 0x0000_0015);
+        assert_eq!(cpu.read_reg(10), 0x0000_0001);
+
+        cpu.step(&mut bus);
+        // Start with hi=0x7FFF_FFFF lo=0xFFFF_FFFF then add 1 -> carry into lo only
+        assert_eq!(cpu.read_reg(11), 0x0000_0000);
+        assert_eq!(cpu.read_reg(12), 0x8000_0000);
+    }
+
+    #[test]
     fn arm_str_and_ldr_word_immediate_preindexed_aligned() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new(128);
@@ -2097,6 +2238,35 @@ mod tests {
 
         cpu.step(&mut bus);
         assert_eq!(cpu.read_reg(2), 0xDEADBEEF);
+    }
+
+    #[test]
+    fn arm_word_load_store_misaligned_rotation() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+        // Base in r0
+        cpu.write_reg(0, 0x40);
+        // Prepare a word at 0x40: 0x11223344
+        write32_le(&mut bus.mem, 0x40, 0x1122_3344);
+
+        // LDR r1, [r0,#1] -> should rotate right by 8: 0x44112233
+        let ldr_mis = (0xE << 28) | (1 << 26) | (0 << 25) | (1 << 24) | (1 << 23) | (0 << 22)
+            | (0 << 21) | (1 << 20) | (0 << 16) | (1 << 12) | 1;
+        write32_le(&mut bus.mem, 4, ldr_mis);
+
+        // STR r2, [r0,#3] : store 0xAABBCCDD rotated left by 24 at 0x40
+        cpu.write_reg(2, 0xAABB_CCDD);
+        let str_mis = (0xE << 28) | (1 << 26) | (0 << 25) | (1 << 24) | (1 << 23) | (0 << 22)
+            | (0 << 21) | (0 << 20) | (0 << 16) | (2 << 12) | 3;
+        write32_le(&mut bus.mem, 8, str_mis);
+
+        cpu.set_pc(0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(1), 0x4411_2233);
+
+        cpu.step(&mut bus);
+        let stored = bus.read32(0x40);
+        assert_eq!(stored, 0xDDAA_BBCC);
     }
 
     #[test]
@@ -2401,5 +2571,112 @@ mod tests {
         assert_eq!(bus.read32(0x104), 0x3333_3333); // r3
         assert_eq!(bus.read32(0x108), 0x7777_7777); // r7
         assert_eq!(bus.read32(0x10C), 0x100C); // r15 (PC+12)
+    }
+
+    #[test]
+    fn thumb_pipeline_advancement() {
+        let mut cpu = Cpu::new();
+        cpu.cpsr_mut().set_state(CpuState::Thumb);
+        let mut bus = MockBus::new(128);
+
+        // Write three instructions
+        let mov_r1 = (0x10 << 11) | (1 << 8) | 0x01; // MOV r1, #1
+        let mov_r2 = (0x10 << 11) | (2 << 8) | 0x02; // MOV r2, #2
+        let mov_r3 = (0x10 << 11) | (3 << 8) | 0x03; // MOV r3, #3
+        bus.write16(0, mov_r1 as u16);
+        bus.write16(2, mov_r2 as u16);
+        bus.write16(4, mov_r3 as u16);
+
+        cpu.set_pc(0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(1), 0x01);
+        assert_eq!(cpu.pc(), 2);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(2), 0x02);
+        assert_eq!(cpu.pc(), 4);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(3), 0x03);
+        assert_eq!(cpu.pc(), 6);
+    }
+
+
+    #[test]
+    fn thumb_pipeline_flush_on_state_change() {
+        let mut cpu = Cpu::new();
+        cpu.cpsr_mut().set_state(CpuState::Thumb);
+        let mut bus = MockBus::new(128);
+
+        // Write ARM instruction at 0x1000: MOV r2, #2
+        let mov_r2_arm = (0xE << 28) | (1 << 25) | (0xD << 21) | (1 << 20) | (0 << 16) | (2 << 12) | 0x02;
+        write32_le(&mut bus.mem, 0x1000, mov_r2_arm);
+        write32_le(&mut bus.mem, 0x1004, mov_r2_arm);
+
+        cpu.set_pc(0);
+        cpu.write_reg(0, 0x1000);
+        // BX r0 to switch to ARM mode
+        let bx = (0x15 << 11) | (3 << 8) | (0 << 7) | (0 << 6) | (0 << 3) | 0;
+        bus.write16(0, bx as u16);
+
+        cpu.set_pc(0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.state(), CpuState::Arm);
+        assert_eq!(cpu.pc(), 0x1000);
+        // Pipeline should be flushed, ARM instruction should execute
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(2), 0x02);
+    }
+
+    #[test]
+    fn arm_pipeline_advancement() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        // Write three ARM instructions
+        let mov_r1 = (0xE << 28) | (1 << 25) | (0xD << 21) | (1 << 20) | (0 << 16) | (1 << 12) | 0x01;
+        let mov_r2 = (0xE << 28) | (1 << 25) | (0xD << 21) | (1 << 20) | (0 << 16) | (2 << 12) | 0x02;
+        let mov_r3 = (0xE << 28) | (1 << 25) | (0xD << 21) | (1 << 20) | (0 << 16) | (3 << 12) | 0x03;
+        write32_le(&mut bus.mem, 4, mov_r1);
+        write32_le(&mut bus.mem, 8, mov_r2);
+        write32_le(&mut bus.mem, 12, mov_r3);
+
+        cpu.set_pc(0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(1), 0x01);
+        assert_eq!(cpu.pc(), 4);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(2), 0x02);
+        assert_eq!(cpu.pc(), 8);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(3), 0x03);
+        assert_eq!(cpu.pc(), 12);
+    }
+
+    #[test]
+    fn arm_pipeline_flush_on_branch() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        // Write instructions: MOV r1, #1 at 4; B to target at 8
+        let mov_r1 = (0xE << 28) | (1 << 25) | (0xD << 21) | (1 << 20) | (0 << 16) | (1 << 12) | 0x01;
+        // After MOV, PC = 4. Branch instruction at 8 will execute when PC=8.
+        // Branch uses PC+8 as base, so base = 16. We want target = 20, so offset = 4.
+        // imm24 = 4/4 = 1
+        let b = (0xE << 28) | (0b101 << 25) | 0x1; // B with imm24=1 (offset 4 bytes)
+        write32_le(&mut bus.mem, 4, mov_r1);
+        write32_le(&mut bus.mem, 8, b);
+
+        cpu.set_pc(0);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(1), 0x01);
+        assert_eq!(cpu.pc(), 4);
+
+        let pc_before_branch = cpu.pc();
+        cpu.step(&mut bus);
+        // PC should have changed due to branch (pipeline flush verified by PC change)
+        assert_ne!(cpu.pc(), pc_before_branch.wrapping_add(4));
     }
 }

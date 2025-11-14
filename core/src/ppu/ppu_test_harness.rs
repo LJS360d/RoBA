@@ -278,6 +278,21 @@ impl TestPPU {
             }
         }
     }
+
+    // Step to an absolute cycle count from start-of-frame boundary.
+    pub fn step_to(&mut self, target_cycles: usize) {
+        if target_cycles > self.cycles {
+            self.step(target_cycles - self.cycles);
+        }
+    }
+
+    // Schedule a VRAM write to occur when advancing to at least target_cycle.
+    pub fn write_vram_at_cycle(&mut self, target_cycle: usize, addr: usize, data: &[u8]) {
+        // Advance to the target cycle first
+        self.step_to(target_cycle);
+        // Then perform the write immediately
+        self.mmu.write_vram(addr, data);
+    }
 }
 
 // Test helpers

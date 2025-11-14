@@ -62,12 +62,15 @@ enum AppState {
 struct GbaApp {
     state: AppState,
     recent_files: Vec<PathBuf>,
+    core: core::Emulator,
+    texture: Option<egui::TextureHandle>,
 }
 
 impl GbaApp {
     // A constructor for the application, handling the initial state based on command-line arguments.
     fn new(rom_path: Option<PathBuf>) -> Self {
         let config = load_config();
+        let core = core::Emulator::new();
 
         if let Some(path) = rom_path {
             let mut recent_files = config.recent_files;
@@ -76,11 +79,15 @@ impl GbaApp {
             Self {
                 state: AppState::Emulation(path),
                 recent_files,
+                core,
+                texture: None,
             }
         } else {
             Self {
                 state: AppState::FileSelection,
                 recent_files: config.recent_files,
+                core,
+                texture: None,
             }
         }
     }
@@ -159,12 +166,34 @@ impl eframe::App for GbaApp {
                     ui.label(format!("Now emulating: {}", rom_path.display()));
                     ui.separator();
 
-                    // This is where you would integrate the 'core' crate's logic.
-                    // For now, it's a placeholder.
-                    // Example:
-                    let mut gba_core = core::Emulator::new();
-                    gba_core.load_rom(rom_path);
-                    gba_core.run_frame();
+                    // Ensure ROM loaded once
+                    if self.texture.is_none() {
+                        self.core.load_rom(rom_path);
+                    }
+
+                    // Step one frame
+                    self.core.run_frame();
+
+                    // Upload texture and draw
+                    let rgba = self.core.framebuffer_rgba();
+                    let size = [core::video::GBA_SCREEN_W as usize, core::video::GBA_SCREEN_H as usize];
+                    let image = egui::ColorImage::from_rgba_unmultiplied(size, rgba);
+                    let tex = self.texture.get_or_insert_with(|| {
+                        ui.ctx().load_texture(
+                            "framebuffer",
+                            image.clone(),
+                            egui::TextureOptions::NEAREST,
+                        )
+                    });
+                    tex.set(image, egui::TextureOptions::NEAREST);
+
+                    let scale = 2.0;
+                    let desired = egui::Vec2::new(
+                        core::video::GBA_SCREEN_W as f32 * scale,
+                        core::video::GBA_SCREEN_H as f32 * scale,
+                    );
+                    let sized = egui::load::SizedTexture { id: tex.id(), size: tex.size_vec2() };
+                    ui.add(egui::Image::new(sized).fit_to_exact_size(desired));
                 }
             }
         });
@@ -190,8 +219,9 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1024.0, 768.0])
             .with_title("RoBA - GBA Emulator")
-            .with_app_id("RoBA")
-            .with_icon(icon),
+            .with_app_id("com.roba.gba")
+            .with_icon(icon)
+            ,
         ..Default::default()
     };
 
