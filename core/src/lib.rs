@@ -19,7 +19,10 @@ pub mod ppu;
 pub mod timing;
 pub mod video;
 
-const CYCLES_PER_FRAME: usize = 280896;
+const CYCLES_PER_SCANLINE: usize = 1232;
+const SCANLINES_PER_FRAME: usize = 228;
+const VISIBLE_SCANLINES: usize = 160;
+const HBLANK_START_CYCLE: usize = 960;
 
 pub struct Emulator {
     cpu: Cpu,
@@ -83,7 +86,7 @@ impl Emulator {
                 self.rom_loaded = true;
 
                 if !self.bios_loaded {
-                    self.cpu.set_entry_point(&mut self.bus, 0x0800_0000);
+                    self.init_without_bios();
                     log::info!("Entry point: ROM (0x08000000) - no BIOS");
                 }
             }
@@ -91,6 +94,23 @@ impl Emulator {
                 log::error!("Failed to load ROM {:?}: {}", rom_path, e);
             }
         }
+    }
+
+    fn init_without_bios(&mut self) {
+        use crate::cpu::CpuMode;
+
+        self.cpu.set_swi_hle(true);
+
+        self.cpu.set_mode(CpuMode::Supervisor);
+        self.cpu.write_reg(13, 0x0300_7FE0);
+
+        self.cpu.set_mode(CpuMode::Irq);
+        self.cpu.write_reg(13, 0x0300_7FA0);
+
+        self.cpu.set_mode(CpuMode::System);
+        self.cpu.write_reg(13, 0x0300_7F00);
+
+        self.cpu.set_entry_point(&mut self.bus, 0x0800_0000);
     }
 
     pub fn step_cpu(&mut self) {
@@ -102,8 +122,26 @@ impl Emulator {
 
         self.bus.set_access_permissions(true, true, true);
 
-        for _ in 0..CYCLES_PER_FRAME {
-            self.step_cpu();
+        for scanline in 0..SCANLINES_PER_FRAME {
+            self.bus.io.vcount = scanline as u16;
+
+            let in_vblank = scanline >= VISIBLE_SCANLINES;
+            let lyc = (self.bus.io.dispstat >> 8) as usize;
+            let vcounter_match = scanline == lyc;
+
+            self.bus.io.dispstat = (self.bus.io.dispstat & 0xFFF8)
+                | (if in_vblank { 1 } else { 0 })
+                | (if vcounter_match { 4 } else { 0 });
+
+            for cycle_in_line in 0..CYCLES_PER_SCANLINE {
+                let in_hblank = cycle_in_line >= HBLANK_START_CYCLE;
+                if in_hblank {
+                    self.bus.io.dispstat |= 2;
+                } else {
+                    self.bus.io.dispstat &= !2;
+                }
+                self.step_cpu();
+            }
         }
 
         self.ppu.render_frame_with_bus(&mut self.bus);
@@ -258,4 +296,27 @@ mod tests {
         let non_zero = fb.iter().any(|&px| px != 0);
         assert!(non_zero, "Framebuffer should have some non-zero pixels");
     }
+
+    #[test]
+    fn shades_rom_renders_multiple_colors() {
+        let mut emu = Emulator::new();
+        let rom_path = PathBuf::from("../test-roms/shades.gba");
+
+        if !rom_path.exists() {
+            return;
+        }
+
+        emu.load_rom(&rom_path);
+        emu.run_frame();
+
+        let fb = emu.ppu_mut().framebuffer();
+        let mut unique_colors: std::collections::HashSet<u16> = std::collections::HashSet::new();
+        for &px in fb.iter() {
+            unique_colors.insert(px);
+        }
+
+        assert!(unique_colors.len() > 1, "shades.gba should render multiple colors, got {}", unique_colors.len());
+        assert!(unique_colors.len() >= 10, "Expected at least 10 colors, got {}", unique_colors.len());
+    }
+
 }

@@ -1753,6 +1753,11 @@ impl Ppu {
         layer: usize,
         is_obj: bool,
     ) -> bool {
+        let any_window_enabled = (self.dispcnt & (DISPCNT_WIN0_ENABLE | DISPCNT_WIN1_ENABLE | DISPCNT_OBJ_WIN_ENABLE)) != 0;
+        if !any_window_enabled {
+            return true;
+        }
+
         let winin_lo = bus.read8(REG_WININ) as u16;
         let winin_hi = bus.read8(REG_WININ + 1) as u16;
         let winin = winin_lo | (winin_hi << 8);
@@ -1760,7 +1765,7 @@ impl Ppu {
         let winout_hi = bus.read8(REG_WINOUT + 1) as u16;
         let winout = winout_lo | (winout_hi << 8);
 
-        let (mask, effect_mask) = match window_region {
+        let (mask, _effect_mask) = match window_region {
             0 => {
                 let bg_mask = (winin >> layer) & 1;
                 let obj_mask = (winin >> 4) & 1;

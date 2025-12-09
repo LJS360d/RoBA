@@ -167,17 +167,24 @@ struct ThumbPipeline {
 }
 
 pub struct Cpu {
-    // Unbanked base registers hold the current view for r0..r15
     regs: [u32; 16],
     cpsr: Cpsr,
     banked: BankedRegs,
     arm_pipe: ArmPipeline,
     thumb_pipe: ThumbPipeline,
+    swi_hle: bool,
 }
 
 impl Default for Cpu {
     fn default() -> Self {
-        let mut cpu = Self { regs: [0; 16], cpsr: Cpsr::new(), banked: BankedRegs::new(), arm_pipe: ArmPipeline::default(), thumb_pipe: ThumbPipeline::default() };
+        let mut cpu = Self {
+            regs: [0; 16],
+            cpsr: Cpsr::new(),
+            banked: BankedRegs::new(),
+            arm_pipe: ArmPipeline::default(),
+            thumb_pipe: ThumbPipeline::default(),
+            swi_hle: false,
+        };
         cpu.cpsr.set_mode(CpuMode::System);
         cpu.banked.r8_shared.copy_from_slice(&cpu.regs[8..=12]);
         cpu
@@ -192,6 +199,10 @@ impl Cpu {
 
     pub fn read_reg(&self, index: usize) -> u32 { self.regs[index] }
     pub fn write_reg(&mut self, index: usize, value: u32) { self.regs[index] = value; }
+
+    pub fn arm_pipeline_decode(&self) -> u32 { self.arm_pipe.decode }
+
+    pub fn set_swi_hle(&mut self, enabled: bool) { self.swi_hle = enabled; }
 
     pub fn mode(&self) -> CpuMode { self.cpsr.mode() }
     pub fn state(&self) -> CpuState { self.cpsr.state() }
@@ -247,6 +258,112 @@ impl Cpu {
     pub fn trigger_irq<B: BusAccess>(&mut self, bus: &mut B) {
         if !self.cpsr.i() {
             self.enter_exception(bus, Exception::Irq);
+        }
+    }
+
+    fn handle_swi<B: BusAccess>(&mut self, bus: &mut B, swi_num: u8) {
+        if self.swi_hle {
+            self.handle_swi_hle(bus, swi_num);
+        } else {
+            self.enter_exception(bus, Exception::Swi);
+        }
+    }
+
+    fn handle_swi_hle<B: BusAccess>(&mut self, bus: &mut B, swi_num: u8) {
+        log::trace!("SWI HLE #{:#04x} r0={:#x} r1={:#x} r2={:#x}",
+            swi_num, self.regs[0], self.regs[1], self.regs[2]);
+
+        match swi_num {
+            0x00 => { /* SoftReset - skip for test ROMs */ }
+            0x01 => { /* RegisterRamReset - skip */ }
+            0x02 => { /* Halt - skip */ }
+            0x03 => { /* Stop - skip */ }
+            0x04 => { /* IntrWait - skip */ }
+            0x05 => { /* VBlankIntrWait - skip (test ROM polling DISPSTAT.vblank) */ }
+            0x06 => {
+                let numerator = self.regs[0] as i32;
+                let denominator = self.regs[1] as i32;
+                if denominator != 0 {
+                    self.regs[0] = (numerator / denominator) as u32;
+                    self.regs[1] = (numerator % denominator) as u32;
+                    self.regs[3] = (numerator / denominator).unsigned_abs();
+                }
+            }
+            0x07 => {
+                let numerator = self.regs[0] as i32;
+                let denominator = self.regs[1] as i32;
+                if denominator != 0 {
+                    self.regs[0] = (numerator % denominator) as u32;
+                    self.regs[1] = (numerator / denominator) as u32;
+                    self.regs[3] = (numerator / denominator).unsigned_abs();
+                }
+            }
+            0x08 => {
+                let input = self.regs[0];
+                let mut x = input;
+                let mut result = 0u32;
+                let mut one = 1u32 << 30;
+                while one > x { one >>= 2; }
+                while one != 0 {
+                    if x >= result + one {
+                        x -= result + one;
+                        result = (result >> 1) + one;
+                    } else {
+                        result >>= 1;
+                    }
+                    one >>= 2;
+                }
+                self.regs[0] = result;
+            }
+            0x09 => {
+                let angle = self.regs[0];
+                let result_r = (self.regs[1] & 0xFFFF) as u32;
+                let theta = ((angle as i32) << 16 >> 16) as f64 * std::f64::consts::PI / 32768.0;
+                let sin_val = (theta.sin() * (1 << 14) as f64) as i32;
+                let cos_val = (theta.cos() * (1 << 14) as f64) as i32;
+                bus.write16(result_r, sin_val as u16);
+                bus.write16(result_r + 2, cos_val as u16);
+                self.regs[0] = sin_val as u32;
+                self.regs[1] = cos_val as u32;
+                self.regs[3] = angle >> 16;
+            }
+            0x0A => {
+                let angle = self.regs[0];
+                let result_r = (self.regs[1] & 0xFFFF) as u32;
+                let theta = ((angle as i32) << 16 >> 16) as f64 * std::f64::consts::PI / 32768.0;
+                let sin_val = (theta.sin() * (1 << 14) as f64) as i32;
+                let cos_val = (theta.cos() * (1 << 14) as f64) as i32;
+                bus.write16(result_r, sin_val as u16);
+                bus.write16(result_r + 2, cos_val as u16);
+            }
+            0x0B | 0x0C => {
+                let src = self.regs[0];
+                let dst = self.regs[1];
+                let len_mode = self.regs[2];
+                let count = len_mode & 0x1FFFFF;
+                let fixed_src = (len_mode >> 24) & 1 != 0;
+                let unit_size = if (len_mode >> 26) & 1 != 0 { 4 } else { 2 };
+
+                for i in 0..count {
+                    let src_addr = if fixed_src { src } else { src + i * unit_size };
+                    let dst_addr = dst + i * unit_size;
+                    if unit_size == 4 {
+                        let v = bus.read32(src_addr);
+                        bus.write32(dst_addr, v);
+                    } else {
+                        let v = bus.read16(src_addr);
+                        bus.write16(dst_addr, v);
+                    }
+                }
+            }
+            0x0D | 0x0E | 0x0F => { /* CpuFastSet / BitUnPack / LZ77 - skip */ }
+            0x10 | 0x11 | 0x12 | 0x13 | 0x14 => { /* Decompression - skip */ }
+            0x19 => { /* SoundBias */ }
+            0x1F => { /* MidiKey2Freq */ }
+            0x2A => { /* SoundDriverVSyncOff */ }
+            _ => {
+                log::warn!("Unhandled SWI #{:#04x}", swi_num);
+            }
         }
     }
 
@@ -706,7 +823,7 @@ impl Cpu {
     fn execute_arm_single_data_transfer<B: BusAccess>(&mut self, bus: &mut B, instr: u32) {
         let cond = (instr >> 28) & 0xF;
         if !self.condition_passed(cond) { return; }
-        let i = ((instr >> 25) & 1) != 0; // immediate/register offset; we support immediate only here
+        let i = ((instr >> 25) & 1) != 0; // 1 = register offset, 0 = immediate offset
         let p = ((instr >> 24) & 1) != 0; // pre-index
         let u = ((instr >> 23) & 1) != 0; // add/subtract offset
         let b = ((instr >> 22) & 1) != 0; // byte/word
@@ -716,10 +833,18 @@ impl Cpu {
         let rd = ((instr >> 12) & 0xF) as usize;
         let base = self.regs[rn];
 
-        // Offset
         let offset = if i {
-            // Register offset not implemented yet
-            0
+            let rm = (instr & 0xF) as usize;
+            let shift_type = (instr >> 5) & 0x3;
+            let shift_amount = (instr >> 7) & 0x1F;
+            let rm_val = self.regs[rm];
+            let (shifted, _) = match shift_type {
+                0 => Self::lsl_with_carry(rm_val, shift_amount, self.cpsr.c(), true),
+                1 => Self::lsr_with_carry(rm_val, shift_amount, self.cpsr.c(), true),
+                2 => Self::asr_with_carry(rm_val, shift_amount, self.cpsr.c(), true),
+                _ => Self::ror_with_carry(rm_val, shift_amount, self.cpsr.c(), true),
+            };
+            shifted
         } else {
             instr & 0xFFF
         };
@@ -737,6 +862,9 @@ impl Cpu {
                 let rotate = (address & 3) * 8;
                 let value = if rotate != 0 { raw.rotate_right(rotate) } else { raw };
                 self.regs[rd] = value;
+                if rd == 15 {
+                    self.flush_pipeline(bus);
+                }
             }
         } else if b {
             bus.write8(address, (self.regs[rd] & 0xFF) as u8);
@@ -756,21 +884,27 @@ impl Cpu {
     }
 
     fn execute_arm_halfword_transfer<B: BusAccess>(&mut self, bus: &mut B, instr: u32) {
-     let cond = (instr >> 28) & 0xF;
-     if !self.condition_passed(cond) { return; }
-     // Format: 000P U 1 W L Rn Rd 0000 (S H) imm8
-     let p = ((instr >> 24) & 1) != 0;
-     let u = ((instr >> 23) & 1) != 0;
-     let w = ((instr >> 21) & 1) != 0;
-     let l = ((instr >> 20) & 1) != 0;
-     let rn = ((instr >> 16) & 0xF) as usize;
-     let rd = ((instr >> 12) & 0xF) as usize;
-     let s = ((instr >> 6) & 1) != 0; // In 1SH1, S is bit6
-     let h = ((instr >> 5) & 1) != 0; // H is bit5
-     let imm8 = (((instr >> 8) & 0xF) << 4) | (instr & 0xF);
-     let base = self.regs[rn];
-     let off = if u { imm8 } else { 0u32.wrapping_sub(imm8) };
-     let address = if p { base.wrapping_add(off) } else { base };
+        let cond = (instr >> 28) & 0xF;
+        if !self.condition_passed(cond) { return; }
+        let p = ((instr >> 24) & 1) != 0;
+        let u = ((instr >> 23) & 1) != 0;
+        let i = ((instr >> 22) & 1) != 0;
+        let w = ((instr >> 21) & 1) != 0;
+        let l = ((instr >> 20) & 1) != 0;
+        let rn = ((instr >> 16) & 0xF) as usize;
+        let rd = ((instr >> 12) & 0xF) as usize;
+        let s = ((instr >> 6) & 1) != 0;
+        let h = ((instr >> 5) & 1) != 0;
+
+        let offset = if i {
+            (((instr >> 8) & 0xF) << 4) | (instr & 0xF)
+        } else {
+            let rm = (instr & 0xF) as usize;
+            self.regs[rm]
+        };
+        let base = self.regs[rn];
+        let off = if u { offset } else { 0u32.wrapping_sub(offset) };
+        let address = if p { base.wrapping_add(off) } else { base };
 
      if l {
          let value = match (s, h) {
@@ -1517,8 +1651,9 @@ impl Cpu {
         }
     }
 
-    fn execute_thumb_software_interrupt<B: BusAccess>(&mut self, bus: &mut B, _instr: u32) {
-        self.enter_exception(bus, Exception::Swi);
+    fn execute_thumb_software_interrupt<B: BusAccess>(&mut self, bus: &mut B, instr: u32) {
+        let swi_num = (instr & 0xFF) as u8;
+        self.handle_swi(bus, swi_num);
     }
 
     #[allow(dead_code)]
@@ -1659,12 +1794,13 @@ impl Cpu {
                         self.regs[15] = base.wrapping_add(offset);
                         self.flush_pipeline(bus);
                     }
-                } else if top3 == 0b010 {
+                } else if top2 == 0b01 {
                     self.execute_arm_single_data_transfer(bus, instr);
                 } else if (instr >> 24) & 0xF == 0xF {
                     let cond = (instr >> 28) & 0xF;
                     if self.condition_passed(cond) {
-                        self.enter_exception(bus, Exception::Swi);
+                        let swi_num = (instr & 0xFF) as u8;
+                        self.handle_swi(bus, swi_num);
                     }
                 }
             }
