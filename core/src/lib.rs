@@ -119,8 +119,10 @@ impl Emulator {
 
     pub fn run_frame(&mut self) {
         self.frame_ready = false;
-
         self.bus.set_access_permissions(true, true, true);
+
+        let mut prev_vblank = false;
+        let mut prev_hblank = false;
 
         for scanline in 0..SCANLINES_PER_FRAME {
             self.bus.io.vcount = scanline as u16;
@@ -129,18 +131,47 @@ impl Emulator {
             let lyc = (self.bus.io.dispstat >> 8) as usize;
             let vcounter_match = scanline == lyc;
 
+            if in_vblank && !prev_vblank {
+                if (self.bus.io.dispstat & 0x08) != 0 {
+                    self.bus.io.request_interrupt(0x0001);
+                }
+            }
+
+            if vcounter_match {
+                if (self.bus.io.dispstat & 0x20) != 0 {
+                    self.bus.io.request_interrupt(0x0004);
+                }
+            }
+
             self.bus.io.dispstat = (self.bus.io.dispstat & 0xFFF8)
                 | (if in_vblank { 1 } else { 0 })
                 | (if vcounter_match { 4 } else { 0 });
 
+            prev_vblank = in_vblank;
+
             for cycle_in_line in 0..CYCLES_PER_SCANLINE {
                 let in_hblank = cycle_in_line >= HBLANK_START_CYCLE;
+
+                if in_hblank && !prev_hblank {
+                    if (self.bus.io.dispstat & 0x10) != 0 {
+                        self.bus.io.request_interrupt(0x0002);
+                    }
+                }
+
                 if in_hblank {
                     self.bus.io.dispstat |= 2;
                 } else {
                     self.bus.io.dispstat &= !2;
                 }
-                self.step_cpu();
+                prev_hblank = in_hblank;
+
+                if !self.bus.io.is_halted() {
+                    self.step_cpu();
+                }
+
+                if self.bus.io.pending_interrupts() {
+                    self.cpu.trigger_irq(&mut self.bus);
+                }
             }
         }
 

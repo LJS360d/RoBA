@@ -11,6 +11,9 @@ use std::path::PathBuf;
 struct Args {
     #[arg(name = "ROM_PATH")]
     rom_path: Option<PathBuf>,
+
+    #[arg(short, long, name = "BIOS_PATH")]
+    bios: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -34,6 +37,7 @@ impl From<core::log_buffer::LogEntry> for DisplayLogEntry {
 #[derive(Serialize, Deserialize, Default)]
 struct Config {
     recent_files: Vec<PathBuf>,
+    bios_path: Option<PathBuf>,
 }
 
 // Function to get the configuration directory.
@@ -74,6 +78,8 @@ enum AppState {
 struct GbaApp {
     state: AppState,
     recent_files: Vec<PathBuf>,
+    bios_path: Option<PathBuf>,
+    bios_loaded: bool,
     core: core::Emulator,
     texture: Option<egui::TextureHandle>,
     show_debug_panel: bool,
@@ -93,9 +99,26 @@ enum LogFilter {
 }
 
 impl GbaApp {
-    fn new(rom_path: Option<PathBuf>) -> Self {
+    fn new(rom_path: Option<PathBuf>, cli_bios_path: Option<PathBuf>) -> Self {
         let config = load_config();
-        let core = core::Emulator::new();
+        let mut core = core::Emulator::new();
+
+        let bios_path = cli_bios_path
+            .or(config.bios_path.clone())
+            .or_else(Self::find_default_bios);
+
+        let bios_loaded = if let Some(ref path) = bios_path {
+            match core.load_bios(path.as_path()) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("Failed to load BIOS from {:?}: {}", path, e);
+                    false
+                }
+            }
+        } else {
+            log::info!("No BIOS path specified, running without BIOS");
+            false
+        };
 
         if let Some(path) = rom_path {
             let mut recent_files = config.recent_files;
@@ -103,6 +126,8 @@ impl GbaApp {
             Self {
                 state: AppState::Emulation(path),
                 recent_files,
+                bios_path,
+                bios_loaded,
                 core,
                 texture: None,
                 show_debug_panel: cfg!(debug_assertions),
@@ -114,6 +139,8 @@ impl GbaApp {
             Self {
                 state: AppState::FileSelection,
                 recent_files: config.recent_files,
+                bios_path,
+                bios_loaded,
                 core,
                 texture: None,
                 show_debug_panel: cfg!(debug_assertions),
@@ -122,6 +149,47 @@ impl GbaApp {
                 log_filter: LogFilter::All,
             }
         }
+    }
+
+    fn find_default_bios() -> Option<PathBuf> {
+        log::debug!("Searching for default BIOS...");
+
+        let candidates = [
+            PathBuf::from("core/assets/gba_bios.bin"),
+            PathBuf::from("assets/gba_bios.bin"),
+            PathBuf::from("gba_bios.bin"),
+        ];
+
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let exe_relative = exe_dir.join("gba_bios.bin");
+                log::debug!("Checking exe-relative: {:?}", exe_relative);
+                if exe_relative.exists() {
+                    log::info!("Found BIOS at {:?}", exe_relative);
+                    return Some(exe_relative);
+                }
+            }
+        }
+
+        for candidate in &candidates {
+            log::debug!("Checking candidate: {:?}", candidate);
+            if candidate.exists() {
+                log::info!("Found BIOS at {:?}", candidate);
+                return Some(candidate.clone());
+            }
+        }
+
+        if let Some(config_dir) = config_dir() {
+            let config_bios = config_dir.join("gba_bios.bin");
+            log::debug!("Checking config dir: {:?}", config_bios);
+            if config_bios.exists() {
+                log::info!("Found BIOS at {:?}", config_bios);
+                return Some(config_bios);
+            }
+        }
+
+        log::warn!("No BIOS found in any default location");
+        None
     }
 
     // Helper function to add a path to the recent files list and manage its length.
@@ -316,10 +384,10 @@ impl eframe::App for GbaApp {
         ctx.request_repaint();
     }
 
-    // Save the recent files list when the application is about to quit.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let config = Config {
             recent_files: self.recent_files.clone(),
+            bios_path: self.bios_path.clone(),
         };
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save config: {}", e);
@@ -349,6 +417,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "RoBA",
         native_options,
-        Box::new(|_cc| Ok(Box::new(GbaApp::new(args.rom_path)))),
+        Box::new(|_cc| Ok(Box::new(GbaApp::new(args.rom_path, args.bios)))),
     )
 }

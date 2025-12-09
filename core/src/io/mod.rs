@@ -27,6 +27,17 @@ pub struct Io {
     pub bg3x: i32,
     pub bg3y: i32,
     pub mosaic: u16,
+
+    pub keyinput: u16,
+    pub keycnt: u16,
+
+    pub ie: u16,
+    pub if_: u16,
+    pub ime: u16,
+
+    pub postflg: u8,
+    pub haltcnt: u8,
+    pub halted: bool,
 }
 
 impl Default for Io {
@@ -60,6 +71,17 @@ impl Default for Io {
             bg3x: 0,
             bg3y: 0,
             mosaic: 0,
+
+            keyinput: 0x03FF,
+            keycnt: 0,
+
+            ie: 0,
+            if_: 0,
+            ime: 0,
+
+            postflg: 0,
+            haltcnt: 0,
+            halted: false,
         }
     }
 }
@@ -133,6 +155,22 @@ impl Io {
             0x0400_003F => ((self.bg3y as u32 >> 24) & 0xFF) as u8,
             0x0400_004C => (self.mosaic & 0xFF) as u8,
             0x0400_004D => (self.mosaic >> 8) as u8,
+
+            0x0400_0130 => (self.keyinput & 0xFF) as u8,
+            0x0400_0131 => (self.keyinput >> 8) as u8,
+            0x0400_0132 => (self.keycnt & 0xFF) as u8,
+            0x0400_0133 => (self.keycnt >> 8) as u8,
+
+            0x0400_0200 => (self.ie & 0xFF) as u8,
+            0x0400_0201 => (self.ie >> 8) as u8,
+            0x0400_0202 => (self.if_ & 0xFF) as u8,
+            0x0400_0203 => (self.if_ >> 8) as u8,
+            0x0400_0208 => (self.ime & 0xFF) as u8,
+            0x0400_0209 => (self.ime >> 8) as u8,
+
+            0x0400_0300 => self.postflg,
+            0x0400_0301 => 0,
+
             _ => 0,
         }
     }
@@ -255,7 +293,43 @@ impl Io {
             }
             0x0400_004C => self.mosaic = (self.mosaic & 0xFF00) | value as u16,
             0x0400_004D => self.mosaic = (self.mosaic & 0x00FF) | ((value as u16) << 8),
+
+            0x0400_0130 => {}
+            0x0400_0131 => {}
+            0x0400_0132 => self.keycnt = (self.keycnt & 0xFF00) | value as u16,
+            0x0400_0133 => self.keycnt = (self.keycnt & 0x00FF) | ((value as u16) << 8),
+
+            0x0400_0200 => self.ie = (self.ie & 0xFF00) | value as u16,
+            0x0400_0201 => self.ie = (self.ie & 0x00FF) | ((value as u16) << 8),
+            0x0400_0202 => self.if_ &= !(value as u16),
+            0x0400_0203 => self.if_ &= !((value as u16) << 8),
+            0x0400_0208 => self.ime = value as u16 & 1,
+            0x0400_0209 => {}
+
+            0x0400_0300 => self.postflg = value & 1,
+            0x0400_0301 => {
+                self.haltcnt = value;
+                if (value & 0x80) == 0 {
+                    self.halted = true;
+                }
+            }
+
             _ => {}
         }
+    }
+
+    pub fn request_interrupt(&mut self, irq: u16) {
+        self.if_ |= irq;
+        if (self.ie & irq) != 0 {
+            self.halted = false;
+        }
+    }
+
+    pub fn pending_interrupts(&self) -> bool {
+        (self.ime & 1) != 0 && (self.ie & self.if_) != 0
+    }
+
+    pub fn is_halted(&self) -> bool {
+        self.halted
     }
 }
