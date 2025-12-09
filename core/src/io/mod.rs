@@ -29,8 +29,8 @@ pub struct Io {
     pub mosaic: u16,
 }
 
-impl Io {
-    pub fn new() -> Self {
+impl Default for Io {
+    fn default() -> Self {
         Self {
             dispcnt: 0,
             dispstat: 0,
@@ -62,6 +62,10 @@ impl Io {
             mosaic: 0,
         }
     }
+}
+
+impl Io {
+    pub fn new() -> Self { Self::default() }
 
     pub fn read8(&self, addr: u32) -> u8 {
         match addr {

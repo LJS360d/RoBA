@@ -1,2 +1,6 @@
+#[derive(Default)]
 pub struct Timing;
-impl Timing { pub fn new() -> Self { Self } }
+
+impl Timing {
+    pub fn new() -> Self { Self }
+}

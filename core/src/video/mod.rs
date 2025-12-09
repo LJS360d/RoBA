@@ -1,5 +1,9 @@
+#[derive(Default)]
 pub struct Video;
-impl Video { pub fn new() -> Self { Self } }
+
+impl Video {
+    pub fn new() -> Self { Self }
+}
 
 pub const GBA_SCREEN_W: usize = 240;
 pub const GBA_SCREEN_H: usize = 160;

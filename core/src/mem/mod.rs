@@ -17,8 +17,8 @@ pub struct Mem {
     pub sram: Vec<u8>,
 }
 
-impl Mem {
-    pub fn new() -> Self {
+impl Default for Mem {
+    fn default() -> Self {
         Self {
             bios: vec![0u8; BIOS_SIZE],
             ewram: vec![0u8; EWRAM_SIZE],
@@ -30,6 +30,10 @@ impl Mem {
             sram: vec![0u8; 64 * 1024],
         }
     }
+}
+
+impl Mem {
+    pub fn new() -> Self { Self::default() }
 
     pub fn load_bios(&mut self, data: &[u8]) {
         let len = data.len().min(BIOS_SIZE);

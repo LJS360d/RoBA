@@ -1,2 +1,6 @@
+#[derive(Default)]
 pub struct Apu;
-impl Apu { pub fn new() -> Self { Self } }
+
+impl Apu {
+    pub fn new() -> Self { Self }
+}

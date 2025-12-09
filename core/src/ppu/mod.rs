@@ -101,9 +101,8 @@ const CYCLES_HBLANK: usize = 272;
 const SCANLINES_VISIBLE: usize = 160;
 const SCANLINES_PER_FRAME: usize = 228;
 
-impl Ppu {
-    /// Creates a new PPU instance.
-    pub fn new() -> Self {
+impl Default for Ppu {
+    fn default() -> Self {
         Ppu {
             dispcnt: 0,
             dispstat: 0,
@@ -113,17 +112,37 @@ impl Ppu {
             vcount: 0,
         }
     }
+}
 
-    pub fn write_dispcnt(&mut self, value: u16) { self.dispcnt = value; }
-    pub fn read_dispcnt(&self) -> u16 { self.dispcnt }
-    pub fn read_dispstat(&self) -> u16 { self.dispstat }
-    pub fn write_palette_entry(&mut self, index: usize, color: u16) {
-        if index < self.palette.len() { self.palette[index] = color; }
+impl Ppu {
+    pub fn new() -> Self {
+        Self::default()
     }
-    pub fn framebuffer(&self) -> &[u16] { &self.framebuffer }
 
-    pub fn cycles_until_vblank(&self) -> usize { CYCLES_PER_SCANLINE * SCANLINES_VISIBLE }
-    pub fn cycles_per_frame(&self) -> usize { CYCLES_PER_SCANLINE * SCANLINES_PER_FRAME }
+    pub fn write_dispcnt(&mut self, value: u16) {
+        self.dispcnt = value;
+    }
+    pub fn read_dispcnt(&self) -> u16 {
+        self.dispcnt
+    }
+    pub fn read_dispstat(&self) -> u16 {
+        self.dispstat
+    }
+    pub fn write_palette_entry(&mut self, index: usize, color: u16) {
+        if index < self.palette.len() {
+            self.palette[index] = color;
+        }
+    }
+    pub fn framebuffer(&self) -> &[u16] {
+        &self.framebuffer
+    }
+
+    pub fn cycles_until_vblank(&self) -> usize {
+        CYCLES_PER_SCANLINE * SCANLINES_VISIBLE
+    }
+    pub fn cycles_per_frame(&self) -> usize {
+        CYCLES_PER_SCANLINE * SCANLINES_PER_FRAME
+    }
 
     pub fn step(&mut self, cycles: usize) {
         let cycles_per_frame = self.cycles_per_frame();
@@ -137,8 +156,7 @@ impl Ppu {
 
             if self.vcount == SCANLINES_VISIBLE as u8 {
                 self.dispstat |= DISPSTAT_VBLANK_FLAG;
-                if (self.dispstat & DISPSTAT_VBLANK_IRQ) != 0 {
-                }
+                // (self.dispstat & DISPSTAT_VBLANK_IRQ) != 0;
                 self.render_frame();
             } else if self.vcount == 0 {
                 self.dispstat &= !DISPSTAT_VBLANK_FLAG;
@@ -147,8 +165,7 @@ impl Ppu {
             let lyc = (self.dispstat >> 8) as u8;
             if self.vcount == lyc {
                 self.dispstat |= DISPSTAT_VCOUNT_FLAG;
-                if (self.dispstat & DISPSTAT_VCOUNT_IRQ) != 0 {
-                }
+                if (self.dispstat & DISPSTAT_VCOUNT_IRQ) != 0 {}
             } else {
                 self.dispstat &= !DISPSTAT_VCOUNT_FLAG;
             }
@@ -156,12 +173,9 @@ impl Ppu {
 
         if cycle_in_scanline < CYCLES_VISIBLE {
             self.dispstat &= !DISPSTAT_HBLANK_FLAG;
-        } else {
-            if (self.dispstat & DISPSTAT_HBLANK_FLAG) == 0 {
-                self.dispstat |= DISPSTAT_HBLANK_FLAG;
-                if (self.dispstat & DISPSTAT_HBLANK_IRQ) != 0 {
-                }
-            }
+        } else if (self.dispstat & DISPSTAT_HBLANK_FLAG) == 0 {
+            self.dispstat |= DISPSTAT_HBLANK_FLAG;
+            if (self.dispstat & DISPSTAT_HBLANK_IRQ) != 0 {}
         }
     }
 
@@ -235,15 +249,21 @@ impl Ppu {
     /// fetching and processing tile and sprite data to produce a frame.
     pub fn render_frame(&mut self) {
         if (self.dispcnt & DISPCNT_FORCED_BLANK) != 0 {
-            for p in self.framebuffer.iter_mut() { *p = 0; }
+            for p in self.framebuffer.iter_mut() {
+                *p = 0;
+            }
             return;
         }
-        for p in self.framebuffer.iter_mut() { *p = 0; }
+        for p in self.framebuffer.iter_mut() {
+            *p = 0;
+        }
         let mode = self.dispcnt & DISPCNT_MODE_MASK;
         let bg0 = (self.dispcnt & DISPCNT_BG0_ENABLE) != 0;
         if mode == 0 && bg0 {
-            let bgcol = self.palette.get(0).cloned().unwrap_or(0);
-            for p in self.framebuffer.iter_mut() { *p = bgcol; }
+            let bgcol = self.palette.first().cloned().unwrap_or(0);
+            for p in self.framebuffer.iter_mut() {
+                *p = bgcol;
+            }
         }
     }
 
@@ -251,7 +271,9 @@ impl Ppu {
         bus.set_ppu_rendering(true);
 
         if (self.dispcnt & DISPCNT_FORCED_BLANK) != 0 {
-            for p in self.framebuffer.iter_mut() { *p = 0; }
+            for p in self.framebuffer.iter_mut() {
+                *p = 0;
+            }
             bus.set_ppu_rendering(false);
             return;
         }
@@ -260,7 +282,9 @@ impl Ppu {
         let hi = bus.read8(REG_DISPCNT + 1) as u16;
         self.dispcnt = lo | (hi << 8);
 
-        for p in self.framebuffer.iter_mut() { *p = 0; }
+        for p in self.framebuffer.iter_mut() {
+            *p = 0;
+        }
 
         let mode = self.dispcnt & DISPCNT_MODE_MASK;
         match mode {
@@ -288,8 +312,12 @@ impl Ppu {
                 let idx = y * SCREEN_W + x;
 
                 for bg_num in 0..4 {
-                    if !self.is_bg_enabled(bg_num) { continue; }
-                    if !self.is_layer_enabled_in_window(bus, window_region, bg_num, false) { continue; }
+                    if !self.is_bg_enabled(bg_num) {
+                        continue;
+                    }
+                    if !self.is_layer_enabled_in_window(bus, window_region, bg_num, false) {
+                        continue;
+                    }
 
                     let bgcnt = self.read_bgcnt(bus, bg_num);
                     let bg_priority = (bgcnt & 0x3) as u8;
@@ -321,11 +349,11 @@ impl Ppu {
 
         {
             let mut fb = layer_buffer.as_mut_slice();
-            self.render_objs_with_windows_layers(bus, &mut fb, &obj_window_mask);
+            self.render_objs_with_windows_layers(bus, fb, &obj_window_mask);
         }
 
-        for idx in 0..FRAME_PIXELS {
-            layer_buffer[idx].sort_by(|a, b| {
+        for layer in layer_buffer.iter_mut().take(FRAME_PIXELS) {
+            layer.sort_by(|a, b| {
                 a.priority.cmp(&b.priority).then_with(|| {
                     if a.is_obj && !b.is_obj {
                         std::cmp::Ordering::Less
@@ -337,6 +365,7 @@ impl Ppu {
                 })
             });
         }
+
 
         for y in 0..SCREEN_H {
             for x in 0..SCREEN_W {
@@ -361,12 +390,18 @@ impl Ppu {
                 let mut priority = 4u8;
 
                 for bg_num in 0..3 {
-                    if !self.is_bg_enabled(bg_num) { continue; }
-                    if !self.is_layer_enabled_in_window(bus, window_region, bg_num, false) { continue; }
+                    if !self.is_bg_enabled(bg_num) {
+                        continue;
+                    }
+                    if !self.is_layer_enabled_in_window(bus, window_region, bg_num, false) {
+                        continue;
+                    }
 
                     let bgcnt = self.read_bgcnt(bus, bg_num);
                     let bg_priority = (bgcnt & 0x3) as u8;
-                    if bg_priority >= priority { continue; }
+                    if bg_priority >= priority {
+                        continue;
+                    }
 
                     let src_x = if (bgcnt >> 6) & 1 != 0 {
                         self.apply_mosaic_x(x, mosaic)
@@ -397,7 +432,7 @@ impl Ppu {
 
         {
             let mut fb = temp_buffer.as_mut_slice();
-            self.render_objs_with_windows(bus, &mut fb, &obj_window_mask);
+            self.render_objs_with_windows(bus, fb, &obj_window_mask);
         }
         self.framebuffer.copy_from_slice(&temp_buffer);
     }
@@ -415,12 +450,18 @@ impl Ppu {
                 let mut priority = 4u8;
 
                 for bg_num in 2..4 {
-                    if !self.is_bg_enabled(bg_num) { continue; }
-                    if !self.is_layer_enabled_in_window(bus, window_region, bg_num, false) { continue; }
+                    if !self.is_bg_enabled(bg_num) {
+                        continue;
+                    }
+                    if !self.is_layer_enabled_in_window(bus, window_region, bg_num, false) {
+                        continue;
+                    }
 
                     let bgcnt = self.read_bgcnt(bus, bg_num);
                     let bg_priority = (bgcnt & 0x3) as u8;
-                    if bg_priority >= priority { continue; }
+                    if bg_priority >= priority {
+                        continue;
+                    }
 
                     let src_x = if (bgcnt >> 6) & 1 != 0 {
                         self.apply_mosaic_x(x, mosaic)
@@ -445,13 +486,15 @@ impl Ppu {
 
         {
             let mut fb = temp_buffer.as_mut_slice();
-            self.render_objs_with_windows(bus, &mut fb, &obj_window_mask);
+            self.render_objs_with_windows(bus, fb, &obj_window_mask);
         }
         self.framebuffer.copy_from_slice(&temp_buffer);
     }
 
     fn render_mode3<B: crate::bus::BusAccess>(&mut self, bus: &mut B) {
-        if !self.is_bg_enabled(2) { return; }
+        if !self.is_bg_enabled(2) {
+            return;
+        }
 
         for y in 0..SCREEN_H {
             for x in 0..SCREEN_W {
@@ -465,7 +508,9 @@ impl Ppu {
     }
 
     fn render_mode4<B: crate::bus::BusAccess>(&mut self, bus: &mut B) {
-        if !self.is_bg_enabled(2) { return; }
+        if !self.is_bg_enabled(2) {
+            return;
+        }
 
         let frame_select = (self.dispcnt >> 4) & 1;
         let frame_base = if frame_select == 0 { 0 } else { 0x0A000 };
@@ -474,7 +519,9 @@ impl Ppu {
             for x in 0..SCREEN_W {
                 let addr = VRAM_START + frame_base + ((y * SCREEN_W + x) as u32);
                 let palette_idx = bus.read8(addr) as usize;
-                if palette_idx == 0 { continue; }
+                if palette_idx == 0 {
+                    continue;
+                }
 
                 let pal_addr = PALETTE_RAM_START + (palette_idx * 2) as u32;
                 let lo = bus.read8(pal_addr) as u16;
@@ -486,7 +533,9 @@ impl Ppu {
     }
 
     fn render_mode5<B: crate::bus::BusAccess>(&mut self, bus: &mut B) {
-        if !self.is_bg_enabled(2) { return; }
+        if !self.is_bg_enabled(2) {
+            return;
+        }
 
         let frame_select = (self.dispcnt >> 4) & 1;
         let frame_base = if frame_select == 0 { 0 } else { 0x0A000 };
@@ -513,24 +562,65 @@ impl Ppu {
         let dispcnt = self.dispcnt;
         let mode = dispcnt & DISPCNT_MODE_MASK;
         let mosaic = self.read_mosaic(bus);
-        let obj_vram_base = if mode >= 3 { OBJ_VRAM_START_MODE345 } else { OBJ_VRAM_START_MODE012 };
+        let obj_vram_base = if mode >= 3 {
+            OBJ_VRAM_START_MODE345
+        } else {
+            OBJ_VRAM_START_MODE012
+        };
         let one_dimensional = (dispcnt & DISPCNT_OBJ_VRAM_MAPPING) != 0;
-        self.render_objs_internal(bus, framebuffer, dispcnt, mode, mosaic, obj_vram_base, one_dimensional);
+        self.render_objs_internal(
+            bus,
+            framebuffer,
+            dispcnt,
+            mode,
+            mosaic,
+            obj_vram_base,
+            one_dimensional,
+        );
     }
 
-    fn render_objs_with_windows<B: crate::bus::BusAccess>(&self, bus: &mut B, framebuffer: &mut [u16], obj_window_mask: &[bool]) {
+    fn render_objs_with_windows<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        framebuffer: &mut [u16],
+        obj_window_mask: &[bool],
+    ) {
         if (self.dispcnt & DISPCNT_OBJ_ENABLE) == 0 {
             return;
         }
         let dispcnt = self.dispcnt;
         let mode = dispcnt & DISPCNT_MODE_MASK;
         let mosaic = self.read_mosaic(bus);
-        let obj_vram_base = if mode >= 3 { OBJ_VRAM_START_MODE345 } else { OBJ_VRAM_START_MODE012 };
+        let obj_vram_base = if mode >= 3 {
+            OBJ_VRAM_START_MODE345
+        } else {
+            OBJ_VRAM_START_MODE012
+        };
         let one_dimensional = (dispcnt & DISPCNT_OBJ_VRAM_MAPPING) != 0;
-        self.render_objs_internal_with_windows(bus, framebuffer, dispcnt, mode, mosaic, obj_vram_base, one_dimensional, obj_window_mask);
+        self.render_objs_internal_with_windows(
+            bus,
+            framebuffer,
+            dispcnt,
+            mode,
+            mosaic,
+            obj_vram_base,
+            one_dimensional,
+            obj_window_mask,
+        );
     }
 
-    fn render_objs_internal_with_windows<B: crate::bus::BusAccess>(&self, bus: &mut B, framebuffer: &mut [u16], dispcnt: u16, mode: u16, mosaic: u16, obj_vram_base: u32, one_dimensional: bool, obj_window_mask: &[bool]) {
+    #[allow(clippy::too_many_arguments)]
+    fn render_objs_internal_with_windows<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        framebuffer: &mut [u16],
+        dispcnt: u16,
+        mode: u16,
+        mosaic: u16,
+        obj_vram_base: u32,
+        one_dimensional: bool,
+        obj_window_mask: &[bool],
+    ) {
         for obj_num in (0..128).rev() {
             let oam_addr = OAM_START + (obj_num * 8) as u32;
             let attr0_lo = bus.read8(oam_addr) as u16;
@@ -618,11 +708,38 @@ impl Ppu {
 
                     let pixel = if rotation_scaling {
                         let param_group = ((attr1 >> 9) & 0x1F) as usize;
-                        self.render_affine_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, param_group, obj_w, obj_h, display_w, display_h, src_x, src_y)
+                        self.render_affine_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            param_group,
+                            obj_w,
+                            obj_h,
+                            display_w,
+                            display_h,
+                            src_x,
+                            src_y,
+                        )
                     } else {
                         let h_flip = (attr1 >> 12) & 1 != 0;
                         let v_flip = (attr1 >> 13) & 1 != 0;
-                        self.render_regular_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, obj_w, obj_h, src_x, src_y, h_flip, v_flip)
+                        self.render_regular_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            obj_w,
+                            obj_h,
+                            src_x,
+                            src_y,
+                            h_flip,
+                            v_flip,
+                        )
                     };
 
                     if let Some(p) = pixel {
@@ -637,14 +754,23 @@ impl Ppu {
         }
     }
 
-    fn render_objs_with_windows_layers<B: crate::bus::BusAccess>(&self, bus: &mut B, layer_buffer: &mut [Vec<PixelLayer>], obj_window_mask: &[bool]) {
+    fn render_objs_with_windows_layers<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        layer_buffer: &mut [Vec<PixelLayer>],
+        obj_window_mask: &[bool],
+    ) {
         if (self.dispcnt & DISPCNT_OBJ_ENABLE) == 0 {
             return;
         }
         let dispcnt = self.dispcnt;
         let mode = dispcnt & DISPCNT_MODE_MASK;
         let mosaic = self.read_mosaic(bus);
-        let obj_vram_base = if mode >= 3 { OBJ_VRAM_START_MODE345 } else { OBJ_VRAM_START_MODE012 };
+        let obj_vram_base = if mode >= 3 {
+            OBJ_VRAM_START_MODE345
+        } else {
+            OBJ_VRAM_START_MODE012
+        };
         let one_dimensional = (dispcnt & DISPCNT_OBJ_VRAM_MAPPING) != 0;
 
         for obj_num in (0..128).rev() {
@@ -735,11 +861,38 @@ impl Ppu {
 
                     let pixel = if rotation_scaling {
                         let param_group = ((attr1 >> 9) & 0x1F) as usize;
-                        self.render_affine_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, param_group, obj_w, obj_h, display_w, display_h, src_x, src_y)
+                        self.render_affine_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            param_group,
+                            obj_w,
+                            obj_h,
+                            display_w,
+                            display_h,
+                            src_x,
+                            src_y,
+                        )
                     } else {
                         let h_flip = (attr1 >> 12) & 1 != 0;
                         let v_flip = (attr1 >> 13) & 1 != 0;
-                        self.render_regular_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, obj_w, obj_h, src_x, src_y, h_flip, v_flip)
+                        self.render_regular_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            obj_w,
+                            obj_h,
+                            src_x,
+                            src_y,
+                            h_flip,
+                            v_flip,
+                        )
                     };
 
                     if let Some(p) = pixel {
@@ -768,13 +921,32 @@ impl Ppu {
         let dispcnt = self.dispcnt;
         let mode = dispcnt & DISPCNT_MODE_MASK;
         let mosaic = self.read_mosaic(bus);
-        let obj_vram_base = if mode >= 3 { OBJ_VRAM_START_MODE345 } else { OBJ_VRAM_START_MODE012 };
+        let obj_vram_base = if mode >= 3 {
+            OBJ_VRAM_START_MODE345
+        } else {
+            OBJ_VRAM_START_MODE012
+        };
         let one_dimensional = (dispcnt & DISPCNT_OBJ_VRAM_MAPPING) != 0;
 
-        self.render_objs_internal_direct(bus, dispcnt, mode, mosaic, obj_vram_base, one_dimensional);
+        self.render_objs_internal_direct(
+            bus,
+            dispcnt,
+            mode,
+            mosaic,
+            obj_vram_base,
+            one_dimensional,
+        );
     }
 
-    fn render_objs_internal_direct<B: crate::bus::BusAccess>(&mut self, bus: &mut B, dispcnt: u16, mode: u16, mosaic: u16, obj_vram_base: u32, one_dimensional: bool) {
+    fn render_objs_internal_direct<B: crate::bus::BusAccess>(
+        &mut self,
+        bus: &mut B,
+        dispcnt: u16,
+        mode: u16,
+        mosaic: u16,
+        obj_vram_base: u32,
+        one_dimensional: bool,
+    ) {
         for obj_num in (0..128).rev() {
             let oam_addr = OAM_START + (obj_num * 8) as u32;
             let attr0_lo = bus.read8(oam_addr) as u16;
@@ -857,11 +1029,38 @@ impl Ppu {
 
                     let pixel = if rotation_scaling {
                         let param_group = ((attr1 >> 9) & 0x1F) as usize;
-                        self.render_affine_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, param_group, obj_w, obj_h, display_w, display_h, src_x, src_y)
+                        self.render_affine_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            param_group,
+                            obj_w,
+                            obj_h,
+                            display_w,
+                            display_h,
+                            src_x,
+                            src_y,
+                        )
                     } else {
                         let h_flip = (attr1 >> 12) & 1 != 0;
                         let v_flip = (attr1 >> 13) & 1 != 0;
-                        self.render_regular_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, obj_w, obj_h, src_x, src_y, h_flip, v_flip)
+                        self.render_regular_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            obj_w,
+                            obj_h,
+                            src_x,
+                            src_y,
+                            h_flip,
+                            v_flip,
+                        )
                     };
 
                     if let Some(p) = pixel {
@@ -876,8 +1075,17 @@ impl Ppu {
         }
     }
 
-    fn render_objs_internal<B: crate::bus::BusAccess>(&self, bus: &mut B, framebuffer: &mut [u16], dispcnt: u16, mode: u16, mosaic: u16, obj_vram_base: u32, one_dimensional: bool) {
-
+    #[allow(clippy::too_many_arguments)]
+    fn render_objs_internal<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        framebuffer: &mut [u16],
+        dispcnt: u16,
+        mode: u16,
+        mosaic: u16,
+        obj_vram_base: u32,
+        one_dimensional: bool,
+    ) {
         for obj_num in (0..128).rev() {
             let oam_addr = OAM_START + (obj_num * 8) as u32;
             let attr0_lo = bus.read8(oam_addr) as u16;
@@ -960,11 +1168,38 @@ impl Ppu {
 
                     let pixel = if rotation_scaling {
                         let param_group = ((attr1 >> 9) & 0x1F) as usize;
-                        self.render_affine_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, param_group, obj_w, obj_h, display_w, display_h, src_x, src_y)
+                        self.render_affine_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            param_group,
+                            obj_w,
+                            obj_h,
+                            display_w,
+                            display_h,
+                            src_x,
+                            src_y,
+                        )
                     } else {
                         let h_flip = (attr1 >> 12) & 1 != 0;
                         let v_flip = (attr1 >> 13) & 1 != 0;
-                        self.render_regular_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, obj_w, obj_h, src_x, src_y, h_flip, v_flip)
+                        self.render_regular_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            obj_w,
+                            obj_h,
+                            src_x,
+                            src_y,
+                            h_flip,
+                            v_flip,
+                        )
                     };
 
                     if let Some(p) = pixel {
@@ -997,14 +1232,37 @@ impl Ppu {
         }
     }
 
-    fn render_regular_obj_pixel<B: crate::bus::BusAccess>(&self, bus: &mut B, obj_vram_base: u32, one_dimensional: bool, is_256_color: bool, tile_num: u16, palette_num: u16, obj_w: usize, obj_h: usize, src_x: usize, src_y: usize, h_flip: bool, v_flip: bool) -> Option<u16> {
+    #[allow(clippy::too_many_arguments)]
+    fn render_regular_obj_pixel<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        obj_vram_base: u32,
+        one_dimensional: bool,
+        is_256_color: bool,
+        tile_num: u16,
+        palette_num: u16,
+        obj_w: usize,
+        obj_h: usize,
+        src_x: usize,
+        src_y: usize,
+        h_flip: bool,
+        v_flip: bool,
+    ) -> Option<u16> {
         let tile_x = src_x / 8;
         let tile_y = src_y / 8;
         let pixel_x = src_x % 8;
         let pixel_y = src_y % 8;
 
-        let final_tile_x = if h_flip { (obj_w / 8) - 1 - tile_x } else { tile_x };
-        let final_tile_y = if v_flip { (obj_h / 8) - 1 - tile_y } else { tile_y };
+        let final_tile_x = if h_flip {
+            (obj_w / 8) - 1 - tile_x
+        } else {
+            tile_x
+        };
+        let final_tile_y = if v_flip {
+            (obj_h / 8) - 1 - tile_y
+        } else {
+            tile_y
+        };
         let final_pixel_x = if h_flip { 7 - pixel_x } else { pixel_x };
         let final_pixel_y = if v_flip { 7 - pixel_y } else { pixel_y };
 
@@ -1052,7 +1310,23 @@ impl Ppu {
         }
     }
 
-    fn render_affine_obj_pixel<B: crate::bus::BusAccess>(&self, bus: &mut B, obj_vram_base: u32, one_dimensional: bool, is_256_color: bool, tile_num: u16, palette_num: u16, param_group: usize, obj_w: usize, obj_h: usize, display_w: usize, display_h: usize, src_x: usize, src_y: usize) -> Option<u16> {
+    #[allow(clippy::too_many_arguments)]
+    fn render_affine_obj_pixel<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        obj_vram_base: u32,
+        one_dimensional: bool,
+        is_256_color: bool,
+        tile_num: u16,
+        palette_num: u16,
+        param_group: usize,
+        obj_w: usize,
+        obj_h: usize,
+        display_w: usize,
+        display_h: usize,
+        src_x: usize,
+        src_y: usize,
+    ) -> Option<u16> {
         let center_x = (obj_w / 2) as i32;
         let center_y = (obj_h / 2) as i32;
 
@@ -1129,7 +1403,14 @@ impl Ppu {
         }
     }
 
-    fn get_bg_priority_at_safe<B: crate::bus::BusAccess>(&self, bus: &mut B, x: usize, y: usize, mode: u16, dispcnt: u16) -> u8 {
+    fn get_bg_priority_at_safe<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        x: usize,
+        y: usize,
+        mode: u16,
+        dispcnt: u16,
+    ) -> u8 {
         let mut min_priority = 4u8;
 
         match mode {
@@ -1231,7 +1512,13 @@ impl Ppu {
         (lo | (hi << 8)) & 0x1FF
     }
 
-    fn render_text_bg_pixel<B: crate::bus::BusAccess>(&self, bus: &mut B, bg_num: usize, x: usize, y: usize) -> Option<u16> {
+    fn render_text_bg_pixel<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        bg_num: usize,
+        x: usize,
+        y: usize,
+    ) -> Option<u16> {
         let bgcnt = self.read_bgcnt(bus, bg_num);
         let hofs = self.read_bg_offset(bus, bg_num, true);
         let vofs = self.read_bg_offset(bus, bg_num, false);
@@ -1277,26 +1564,31 @@ impl Ppu {
         let final_pixel_x = if h_flip { 7 - pixel_x } else { pixel_x };
         let final_pixel_y = if v_flip { 7 - pixel_y } else { pixel_y };
 
-        let tile_addr = VRAM_START + char_base + tile_num as u32 * (if is_256_color { 64 } else { 32 });
-        let row_addr = tile_addr + final_pixel_y as u32 * (if is_256_color { 8 } else { 4 });
+        let tile_addr =
+            VRAM_START + char_base + tile_num as u32 * (if is_256_color { 64 } else { 32 });
+        let row_addr = tile_addr + final_pixel_y * (if is_256_color { 8 } else { 4 });
 
         if is_256_color {
-            let pixel_addr = row_addr + final_pixel_x as u32;
+            let pixel_addr = row_addr + final_pixel_x;
             let palette_idx = bus.read8(pixel_addr) as usize;
-            if palette_idx == 0 { return None; }
+            if palette_idx == 0 {
+                return None;
+            }
             let pal_addr = PALETTE_RAM_START + (palette_idx * 2) as u32;
             let lo = bus.read8(pal_addr) as u16;
             let hi = bus.read8(pal_addr + 1) as u16;
             Some(lo | (hi << 8))
         } else {
-            let byte_addr = row_addr + (final_pixel_x / 2) as u32;
+            let byte_addr = row_addr + (final_pixel_x / 2);
             let byte = bus.read8(byte_addr);
             let palette_idx = if (final_pixel_x & 1) == 0 {
                 byte & 0xF
             } else {
                 byte >> 4
             } as usize;
-            if palette_idx == 0 { return None; }
+            if palette_idx == 0 {
+                return None;
+            }
             let pal_addr = PALETTE_RAM_START + (palette_num as usize * 32 + palette_idx * 2) as u32;
             let lo = bus.read8(pal_addr) as u16;
             let hi = bus.read8(pal_addr + 1) as u16;
@@ -1304,7 +1596,13 @@ impl Ppu {
         }
     }
 
-    fn render_affine_bg_pixel<B: crate::bus::BusAccess>(&self, bus: &mut B, bg_num: usize, x: usize, y: usize) -> Option<u16> {
+    fn render_affine_bg_pixel<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        bg_num: usize,
+        x: usize,
+        y: usize,
+    ) -> Option<u16> {
         let bgcnt = self.read_bgcnt(bus, bg_num);
         let screen_size = (bgcnt >> 14) & 0x3;
         let screen_base = (((bgcnt >> 8) & 0x1F) * 0x800) as u32;
@@ -1359,7 +1657,12 @@ impl Ppu {
         let src_x = ref_x + (pa as i32 * x as i32) + (pb as i32 * y as i32);
         let src_y = ref_y + (pc as i32 * x as i32) + (pd as i32 * y as i32);
 
-        if !wrap && (src_x < 0 || src_x >= (bg_size * 8) as i32 || src_y < 0 || src_y >= (bg_size * 8) as i32) {
+        if !wrap
+            && (src_x < 0
+                || src_x >= (bg_size * 8) as i32
+                || src_y < 0
+                || src_y >= (bg_size * 8) as i32)
+        {
             return None;
         }
 
@@ -1379,7 +1682,9 @@ impl Ppu {
         let pixel_addr = row_addr + pixel_x;
 
         let palette_idx = bus.read8(pixel_addr) as usize;
-        if palette_idx == 0 { return None; }
+        if palette_idx == 0 {
+            return None;
+        }
 
         let pal_addr = PALETTE_RAM_START + (palette_idx * 2) as u32;
         let lo = bus.read8(pal_addr) as u16;
@@ -1387,7 +1692,13 @@ impl Ppu {
         Some(lo | (hi << 8))
     }
 
-    fn get_window_region<B: crate::bus::BusAccess>(&self, bus: &mut B, x: usize, y: usize, obj_window_mask: &[bool]) -> u8 {
+    fn get_window_region<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        x: usize,
+        y: usize,
+        obj_window_mask: &[bool],
+    ) -> u8 {
         let win0_enable = (self.dispcnt & DISPCNT_WIN0_ENABLE) != 0;
         let win1_enable = (self.dispcnt & DISPCNT_WIN1_ENABLE) != 0;
         let obj_win_enable = (self.dispcnt & DISPCNT_OBJ_WIN_ENABLE) != 0;
@@ -1435,7 +1746,13 @@ impl Ppu {
         3
     }
 
-    fn is_layer_enabled_in_window<B: crate::bus::BusAccess>(&self, bus: &mut B, window_region: u8, layer: usize, is_obj: bool) -> bool {
+    fn is_layer_enabled_in_window<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        window_region: u8,
+        layer: usize,
+        is_obj: bool,
+    ) -> bool {
         let winin_lo = bus.read8(REG_WININ) as u16;
         let winin_hi = bus.read8(REG_WININ + 1) as u16;
         let winin = winin_lo | (winin_hi << 8);
@@ -1476,12 +1793,17 @@ impl Ppu {
     fn build_obj_window_mask<B: crate::bus::BusAccess>(&self, bus: &mut B) -> Vec<bool> {
         let mut mask = vec![false; FRAME_PIXELS];
 
-        if (self.dispcnt & DISPCNT_OBJ_ENABLE) == 0 || (self.dispcnt & DISPCNT_OBJ_WIN_ENABLE) == 0 {
+        if (self.dispcnt & DISPCNT_OBJ_ENABLE) == 0 || (self.dispcnt & DISPCNT_OBJ_WIN_ENABLE) == 0
+        {
             return mask;
         }
 
         let mode = self.dispcnt & DISPCNT_MODE_MASK;
-        let obj_vram_base = if mode >= 3 { OBJ_VRAM_START_MODE345 } else { OBJ_VRAM_START_MODE012 };
+        let obj_vram_base = if mode >= 3 {
+            OBJ_VRAM_START_MODE345
+        } else {
+            OBJ_VRAM_START_MODE012
+        };
         let one_dimensional = (self.dispcnt & DISPCNT_OBJ_VRAM_MAPPING) != 0;
 
         for obj_num in 0..128 {
@@ -1554,11 +1876,38 @@ impl Ppu {
 
                     let pixel = if rotation_scaling {
                         let param_group = ((attr1 >> 9) & 0x1F) as usize;
-                        self.render_affine_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, param_group, obj_w, obj_h, display_w, display_h, src_x, src_y)
+                        self.render_affine_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            param_group,
+                            obj_w,
+                            obj_h,
+                            display_w,
+                            display_h,
+                            src_x,
+                            src_y,
+                        )
                     } else {
                         let h_flip = (attr1 >> 12) & 1 != 0;
                         let v_flip = (attr1 >> 13) & 1 != 0;
-                        self.render_regular_obj_pixel(bus, obj_vram_base, one_dimensional, is_256_color, tile_num, palette_num, obj_w, obj_h, src_x, src_y, h_flip, v_flip)
+                        self.render_regular_obj_pixel(
+                            bus,
+                            obj_vram_base,
+                            one_dimensional,
+                            is_256_color,
+                            tile_num,
+                            palette_num,
+                            obj_w,
+                            obj_h,
+                            src_x,
+                            src_y,
+                            h_flip,
+                            v_flip,
+                        )
                     };
 
                     if pixel.is_some() {
@@ -1588,7 +1937,13 @@ impl Ppu {
         bus.read8(REG_BLDY) as u16
     }
 
-    fn is_1st_target<B: crate::bus::BusAccess>(&self, bus: &mut B, layer: usize, is_obj: bool, is_backdrop: bool) -> bool {
+    fn is_1st_target<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        layer: usize,
+        is_obj: bool,
+        is_backdrop: bool,
+    ) -> bool {
         let bldcnt = self.read_bldcnt(bus);
         if is_backdrop {
             return (bldcnt >> 5) & 1 != 0;
@@ -1599,7 +1954,13 @@ impl Ppu {
         (bldcnt >> layer) & 1 != 0
     }
 
-    fn is_2nd_target<B: crate::bus::BusAccess>(&self, bus: &mut B, layer: usize, is_obj: bool, is_backdrop: bool) -> bool {
+    fn is_2nd_target<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        layer: usize,
+        is_obj: bool,
+        is_backdrop: bool,
+    ) -> bool {
         let bldcnt = self.read_bldcnt(bus);
         if is_backdrop {
             return (bldcnt >> 13) & 1 != 0;
@@ -1610,7 +1971,15 @@ impl Ppu {
         (bldcnt >> (8 + layer)) & 1 != 0
     }
 
-    fn apply_color_effects<B: crate::bus::BusAccess>(&self, bus: &mut B, pixel1: u16, pixel2: Option<u16>, layer1: usize, is_obj1: bool, is_backdrop1: bool) -> u16 {
+    fn apply_color_effects<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        pixel1: u16,
+        pixel2: Option<u16>,
+        layer1: usize,
+        is_obj1: bool,
+        is_backdrop1: bool,
+    ) -> u16 {
         let bldcnt = self.read_bldcnt(bus);
         let effect_mode = (bldcnt >> 6) & 0x3;
 
@@ -1630,11 +1999,11 @@ impl Ppu {
                     let eva = ((bldalpha & 0x1F) as u32).min(16);
                     let evb = (((bldalpha >> 8) & 0x1F) as u32).min(16);
 
-                    let r1 = ((pixel1 >> 0) & 0x1F) as u32;
+                    let r1 = (pixel1 & 0x1F) as u32;
                     let g1 = ((pixel1 >> 5) & 0x1F) as u32;
                     let b1 = ((pixel1 >> 10) & 0x1F) as u32;
 
-                    let r2 = ((p2 >> 0) & 0x1F) as u32;
+                    let r2 = (p2 & 0x1F) as u32;
                     let g2 = ((p2 >> 5) & 0x1F) as u32;
                     let b2 = ((p2 >> 10) & 0x1F) as u32;
 
@@ -1651,7 +2020,7 @@ impl Ppu {
                 let bldy = self.read_bldy(bus);
                 let evy = ((bldy & 0x1F) as u32).min(16);
 
-                let r1 = ((pixel1 >> 0) & 0x1F) as u32;
+                let r1 = (pixel1 & 0x1F) as u32;
                 let g1 = ((pixel1 >> 5) & 0x1F) as u32;
                 let b1 = ((pixel1 >> 10) & 0x1F) as u32;
 
@@ -1665,7 +2034,7 @@ impl Ppu {
                 let bldy = self.read_bldy(bus);
                 let evy = ((bldy & 0x1F) as u32).min(16);
 
-                let r1 = ((pixel1 >> 0) & 0x1F) as u32;
+                let r1 = (pixel1 & 0x1F) as u32;
                 let g1 = ((pixel1 >> 5) & 0x1F) as u32;
                 let b1 = ((pixel1 >> 10) & 0x1F) as u32;
 
@@ -1679,7 +2048,13 @@ impl Ppu {
         }
     }
 
-    fn combine_pixel_layers<B: crate::bus::BusAccess>(&self, bus: &mut B, top: Option<PixelLayer>, second: Option<PixelLayer>, backdrop: u16) -> u16 {
+    fn combine_pixel_layers<B: crate::bus::BusAccess>(
+        &self,
+        bus: &mut B,
+        top: Option<PixelLayer>,
+        second: Option<PixelLayer>,
+        backdrop: u16,
+    ) -> u16 {
         let top = match top {
             Some(t) => t,
             None => {
@@ -1694,11 +2069,11 @@ impl Ppu {
             let evb = (((bldalpha >> 8) & 0x1F) as u32).min(16);
 
             if let Some(p2) = second_pixel {
-                let r1 = ((top.color >> 0) & 0x1F) as u32;
+                let r1 = (top.color & 0x1F) as u32;
                 let g1 = ((top.color >> 5) & 0x1F) as u32;
                 let b1 = ((top.color >> 10) & 0x1F) as u32;
 
-                let r2 = ((p2 >> 0) & 0x1F) as u32;
+                let r2 = (p2 & 0x1F) as u32;
                 let g2 = ((p2 >> 5) & 0x1F) as u32;
                 let b2 = ((p2 >> 10) & 0x1F) as u32;
 
@@ -1735,11 +2110,11 @@ impl Ppu {
                     let eva = ((bldalpha & 0x1F) as u32).min(16);
                     let evb = (((bldalpha >> 8) & 0x1F) as u32).min(16);
 
-                    let r1 = ((top.color >> 0) & 0x1F) as u32;
+                    let r1 = (top.color & 0x1F) as u32;
                     let g1 = ((top.color >> 5) & 0x1F) as u32;
                     let b1 = ((top.color >> 10) & 0x1F) as u32;
 
-                    let r2 = ((p2 >> 0) & 0x1F) as u32;
+                    let r2 = (p2 & 0x1F) as u32;
                     let g2 = ((p2 >> 5) & 0x1F) as u32;
                     let b2 = ((p2 >> 10) & 0x1F) as u32;
 
@@ -1756,7 +2131,7 @@ impl Ppu {
                 let bldy = self.read_bldy(bus);
                 let evy = ((bldy & 0x1F) as u32).min(16);
 
-                let r1 = ((top.color >> 0) & 0x1F) as u32;
+                let r1 = (top.color & 0x1F) as u32;
                 let g1 = ((top.color >> 5) & 0x1F) as u32;
                 let b1 = ((top.color >> 10) & 0x1F) as u32;
 
@@ -1770,7 +2145,7 @@ impl Ppu {
                 let bldy = self.read_bldy(bus);
                 let evy = ((bldy & 0x1F) as u32).min(16);
 
-                let r1 = ((top.color >> 0) & 0x1F) as u32;
+                let r1 = (top.color & 0x1F) as u32;
                 let g1 = ((top.color >> 5) & 0x1F) as u32;
                 let b1 = ((top.color >> 10) & 0x1F) as u32;
 
@@ -1988,7 +2363,10 @@ mod tests {
 
         ppu.render_frame_with_bus(&mut bus);
 
-        assert!(ppu.framebuffer().len() == FRAME_PIXELS, "Framebuffer should be correct size");
+        assert!(
+            ppu.framebuffer().len() == FRAME_PIXELS,
+            "Framebuffer should be correct size"
+        );
     }
 
     /// Test Suite for Color Effects (Alpha Blending, Brightness).
@@ -2008,7 +2386,10 @@ mod tests {
 
         ppu.render_frame_with_bus(&mut bus);
 
-        assert!(ppu.framebuffer().len() == FRAME_PIXELS, "Framebuffer should be correct size");
+        assert!(
+            ppu.framebuffer().len() == FRAME_PIXELS,
+            "Framebuffer should be correct size"
+        );
     }
 
     #[test]
@@ -2026,7 +2407,10 @@ mod tests {
 
         ppu.render_frame_with_bus(&mut bus);
 
-        assert!(ppu.framebuffer().len() == FRAME_PIXELS, "Framebuffer should be correct size");
+        assert!(
+            ppu.framebuffer().len() == FRAME_PIXELS,
+            "Framebuffer should be correct size"
+        );
     }
 
     /// Test Suite for Interrupts.

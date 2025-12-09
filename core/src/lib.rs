@@ -13,6 +13,7 @@ pub mod bus;
 pub mod cart;
 pub mod cpu;
 pub mod io;
+pub mod log_buffer;
 pub mod mem;
 pub mod ppu;
 pub mod timing;
@@ -26,6 +27,7 @@ pub struct Emulator {
     bus: Bus,
     rgba_frame: Vec<u8>,
     cycles: usize,
+    frame_count: u64,
     frame_ready: bool,
     bios_loaded: bool,
     rom_loaded: bool,
@@ -33,12 +35,14 @@ pub struct Emulator {
 
 impl Emulator {
     pub fn new() -> Self {
+        log::info!("Emulator instance created");
         Self {
             cpu: Cpu::new(),
             ppu: Ppu::new(),
             bus: Bus::new(),
             rgba_frame: vec![0u8; GBA_SCREEN_W * GBA_SCREEN_H * 4],
             cycles: 0,
+            frame_count: 0,
             frame_ready: false,
             bios_loaded: false,
             rom_loaded: false,
@@ -46,20 +50,25 @@ impl Emulator {
     }
 
     pub fn reset(&mut self) {
+        log::info!("Emulator reset");
         self.cpu = Cpu::new();
         self.ppu = Ppu::new();
         self.cycles = 0;
+        self.frame_count = 0;
         self.frame_ready = false;
 
         if self.bios_loaded {
             self.cpu.set_entry_point(&mut self.bus, 0x0000_0000);
+            log::info!("Entry point: BIOS (0x00000000)");
         } else if self.rom_loaded {
             self.cpu.set_entry_point(&mut self.bus, 0x0800_0000);
+            log::info!("Entry point: ROM (0x08000000)");
         }
     }
 
     pub fn load_bios(&mut self, path: &Path) -> Result<(), std::io::Error> {
         let data = std::fs::read(path)?;
+        log::info!("BIOS loaded: {} bytes from {:?}", data.len(), path);
         self.bus.load_bios(&data);
         self.bios_loaded = true;
         self.cpu.set_entry_point(&mut self.bus, 0x0000_0000);
@@ -67,12 +76,19 @@ impl Emulator {
     }
 
     pub fn load_rom(&mut self, rom_path: &PathBuf) {
-        if let Ok(data) = std::fs::read(rom_path) {
-            self.bus.load_rom(&data);
-            self.rom_loaded = true;
+        match std::fs::read(rom_path) {
+            Ok(data) => {
+                log::info!("ROM loaded: {} bytes from {:?}", data.len(), rom_path);
+                self.bus.load_rom(&data);
+                self.rom_loaded = true;
 
-            if !self.bios_loaded {
-                self.cpu.set_entry_point(&mut self.bus, 0x0800_0000);
+                if !self.bios_loaded {
+                    self.cpu.set_entry_point(&mut self.bus, 0x0800_0000);
+                    log::info!("Entry point: ROM (0x08000000) - no BIOS");
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to load ROM {:?}: {}", rom_path, e);
             }
         }
     }
@@ -92,6 +108,16 @@ impl Emulator {
 
         self.ppu.render_frame_with_bus(&mut self.bus);
         self.frame_ready = true;
+        self.frame_count += 1;
+
+        if self.frame_count.is_multiple_of(60) {
+            log::debug!(
+                "Frame {} complete | PC={:#010x} | DISPCNT={:#06x}",
+                self.frame_count,
+                self.cpu.read_reg(15),
+                self.bus.io.dispcnt
+            );
+        }
 
         framebuffer_rgb555_to_rgba(&mut self.rgba_frame, self.ppu.framebuffer());
     }

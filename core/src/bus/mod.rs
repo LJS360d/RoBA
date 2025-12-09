@@ -1,6 +1,24 @@
 use crate::mem::{Mem, BIOS_SIZE, EWRAM_SIZE, IWRAM_SIZE, VRAM_SIZE, PALETTE_SIZE, OAM_SIZE};
 use crate::io::Io;
 
+fn io_register_name(addr: u32) -> Option<&'static str> {
+    match addr {
+        0x0400_0000..=0x0400_0001 => Some("DISPCNT"),
+        0x0400_0004..=0x0400_0005 => Some("DISPSTAT"),
+        0x0400_0006..=0x0400_0007 => Some("VCOUNT"),
+        0x0400_0008..=0x0400_0009 => Some("BG0CNT"),
+        0x0400_000A..=0x0400_000B => Some("BG1CNT"),
+        0x0400_000C..=0x0400_000D => Some("BG2CNT"),
+        0x0400_000E..=0x0400_000F => Some("BG3CNT"),
+        0x0400_004C..=0x0400_004D => Some("MOSAIC"),
+        0x0400_0050..=0x0400_0051 => Some("BLDCNT"),
+        0x0400_0200..=0x0400_0201 => Some("IE"),
+        0x0400_0202..=0x0400_0203 => Some("IF"),
+        0x0400_0208..=0x0400_0209 => Some("IME"),
+        _ => None,
+    }
+}
+
 pub trait BusAccess {
     fn read32(&mut self, addr: u32) -> u32;
     fn read16(&mut self, addr: u32) -> u16;
@@ -30,8 +48,8 @@ pub struct Bus {
     last_bios_read: u32,
 }
 
-impl Bus {
-    pub fn new() -> Self {
+impl Default for Bus {
+    fn default() -> Self {
         Self {
             mem: Mem::new(),
             io: Io::new(),
@@ -43,6 +61,10 @@ impl Bus {
             last_bios_read: 0,
         }
     }
+}
+
+impl Bus {
+    pub fn new() -> Self { Self::default() }
 
     pub fn set_ppu_rendering(&mut self, rendering: bool) {
         self.ppu_rendering = rendering;
@@ -71,10 +93,12 @@ impl Bus {
     }
 
     pub fn load_bios(&mut self, data: &[u8]) {
+        log::info!("Bus: loading BIOS ({} bytes)", data.len());
         self.mem.load_bios(data);
     }
 
     pub fn load_rom(&mut self, data: &[u8]) {
+        log::info!("Bus: loading ROM ({} bytes, {} KB)", data.len(), data.len() / 1024);
         self.mem.load_rom(data);
     }
 }
@@ -157,7 +181,7 @@ impl BusAccess for Bus {
                 let off = ((addr - OAM_BASE) as usize) % OAM_SIZE;
                 self.mem.oam[off]
             }
-            0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D => {
+            0x08..=0x0D => {
                 let off = (addr & 0x01FF_FFFF) as usize;
                 if off < self.mem.rom.len() {
                     self.mem.rom[off]
@@ -199,6 +223,9 @@ impl BusAccess for Bus {
             }
             0x04 => {
                 if addr < IO_BASE + 0x400 {
+                    if let Some(name) = io_register_name(addr) {
+                        log::trace!("IO write8 {} ({:#010x}) = {:#04x}", name, addr, value);
+                    }
                     self.io.write8(addr, value);
                 }
             }
