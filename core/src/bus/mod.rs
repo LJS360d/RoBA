@@ -1,4 +1,4 @@
-use crate::mem::Mem;
+use crate::mem::{Mem, BIOS_SIZE, EWRAM_SIZE, IWRAM_SIZE, VRAM_SIZE, PALETTE_SIZE, OAM_SIZE};
 use crate::io::Io;
 
 pub trait BusAccess {
@@ -11,6 +11,14 @@ pub trait BusAccess {
     fn set_ppu_rendering(&mut self, _rendering: bool) {}
 }
 
+const EWRAM_BASE: u32 = 0x0200_0000;
+const IWRAM_BASE: u32 = 0x0300_0000;
+const IO_BASE: u32 = 0x0400_0000;
+const PALETTE_BASE: u32 = 0x0500_0000;
+const VRAM_BASE: u32 = 0x0600_0000;
+const OAM_BASE: u32 = 0x0700_0000;
+const SRAM_BASE: u32 = 0x0E00_0000;
+
 pub struct Bus {
     pub mem: Mem,
     pub io: Io,
@@ -18,6 +26,8 @@ pub struct Bus {
     can_access_vram: bool,
     can_access_palette: bool,
     can_access_oam: bool,
+    bios_readable: bool,
+    last_bios_read: u32,
 }
 
 impl Bus {
@@ -29,6 +39,8 @@ impl Bus {
             can_access_vram: true,
             can_access_palette: true,
             can_access_oam: true,
+            bios_readable: true,
+            last_bios_read: 0,
         }
     }
 
@@ -42,6 +54,10 @@ impl Bus {
         self.can_access_oam = oam;
     }
 
+    pub fn set_bios_readable(&mut self, readable: bool) {
+        self.bios_readable = readable;
+    }
+
     fn check_vram_access(&self) -> bool {
         self.ppu_rendering || self.can_access_vram
     }
@@ -53,90 +69,169 @@ impl Bus {
     fn check_oam_access(&self) -> bool {
         self.ppu_rendering || self.can_access_oam
     }
-}
-const IO_BASE: u32 = 0x0400_0000;
 
-const PALETTE_BASE: u32 = 0x0500_0000;
-const VRAM_BASE: u32 = 0x0600_0000;
-const VRAM_SIZE: usize = 96 * 1024;
-const OAM_BASE: u32 = 0x0700_0000;
-const OAM_SIZE: usize = 1024;
-const PALETTE_SIZE: usize = 512;
+    pub fn load_bios(&mut self, data: &[u8]) {
+        self.mem.load_bios(data);
+    }
+
+    pub fn load_rom(&mut self, data: &[u8]) {
+        self.mem.load_rom(data);
+    }
+}
 
 impl BusAccess for Bus {
     fn read32(&mut self, addr: u32) -> u32 {
-        let lo = self.read16(addr) as u32;
-        let hi = self.read16(addr.wrapping_add(2)) as u32;
-        (hi << 16) | lo
+        let aligned = addr & !3;
+        let lo = self.read16(aligned) as u32;
+        let hi = self.read16(aligned.wrapping_add(2)) as u32;
+        let value = lo | (hi << 16);
+        let rotation = (addr & 3) * 8;
+        value.rotate_right(rotation)
     }
+
     fn read16(&mut self, addr: u32) -> u16 {
-        let a = addr & !1;
-        let b0 = self.read8(a) as u16;
-        let b1 = self.read8(a + 1) as u16;
-        b0 | (b1 << 8)
+        let aligned = addr & !1;
+        let b0 = self.read8(aligned) as u16;
+        let b1 = self.read8(aligned + 1) as u16;
+        let value = b0 | (b1 << 8);
+        if addr & 1 != 0 {
+            value.rotate_right(8)
+        } else {
+            value
+        }
     }
+
     fn read8(&mut self, addr: u32) -> u8 {
-        match addr {
-            a if a >= IO_BASE && a < IO_BASE + 0x400 => {
-                self.io.read8(a)
+        match addr >> 24 {
+            0x00 => {
+                if addr < BIOS_SIZE as u32 {
+                    if self.bios_readable {
+                        let v = self.mem.bios[addr as usize];
+                        self.last_bios_read = self.read32_direct_bios(addr & !3);
+                        v
+                    } else {
+                        ((self.last_bios_read >> ((addr & 3) * 8)) & 0xFF) as u8
+                    }
+                } else {
+                    0
+                }
             }
-            a if a >= PALETTE_BASE && a < PALETTE_BASE + 0x400 => {
+            0x02 => {
+                let off = ((addr - EWRAM_BASE) as usize) % EWRAM_SIZE;
+                self.mem.ewram[off]
+            }
+            0x03 => {
+                let off = ((addr - IWRAM_BASE) as usize) % IWRAM_SIZE;
+                self.mem.iwram[off]
+            }
+            0x04 => {
+                if addr < IO_BASE + 0x400 {
+                    self.io.read8(addr)
+                } else {
+                    0
+                }
+            }
+            0x05 => {
                 if !self.check_palette_access() {
                     return 0;
                 }
-                let off = ((a - PALETTE_BASE) as usize) % PALETTE_SIZE;
+                let off = ((addr - PALETTE_BASE) as usize) % PALETTE_SIZE;
                 self.mem.palette[off]
             }
-            a if a >= VRAM_BASE && a < VRAM_BASE + 0x18000 => {
+            0x06 => {
                 if !self.check_vram_access() {
                     return 0;
                 }
-                let off = ((a - VRAM_BASE) as usize) % VRAM_SIZE;
+                let raw_off = (addr - VRAM_BASE) as usize;
+                let off = if raw_off >= 0x18000 {
+                    0x10000 + ((raw_off - 0x10000) % 0x8000)
+                } else {
+                    raw_off % VRAM_SIZE
+                };
                 self.mem.vram[off]
             }
-            a if a >= OAM_BASE && a < OAM_BASE + 0x400 => {
+            0x07 => {
                 if !self.check_oam_access() {
                     return 0;
                 }
-                let off = ((a - OAM_BASE) as usize) % OAM_SIZE;
+                let off = ((addr - OAM_BASE) as usize) % OAM_SIZE;
                 self.mem.oam[off]
+            }
+            0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D => {
+                let off = (addr & 0x01FF_FFFF) as usize;
+                if off < self.mem.rom.len() {
+                    self.mem.rom[off]
+                } else {
+                    let halfword_idx = (addr >> 1) as u16;
+                    ((halfword_idx >> ((addr & 1) * 8)) & 0xFF) as u8
+                }
+            }
+            0x0E | 0x0F => {
+                let off = ((addr - SRAM_BASE) as usize) % self.mem.sram.len();
+                self.mem.sram[off]
             }
             _ => 0,
         }
     }
+
     fn write32(&mut self, addr: u32, value: u32) {
-        self.write16(addr, value as u16);
-        self.write16(addr.wrapping_add(2), (value >> 16) as u16);
+        let aligned = addr & !3;
+        self.write16(aligned, value as u16);
+        self.write16(aligned.wrapping_add(2), (value >> 16) as u16);
     }
+
     fn write16(&mut self, addr: u32, value: u16) {
-        self.write8(addr, (value & 0xFF) as u8);
-        self.write8(addr.wrapping_add(1), (value >> 8) as u8);
+        let aligned = addr & !1;
+        self.write8(aligned, (value & 0xFF) as u8);
+        self.write8(aligned.wrapping_add(1), (value >> 8) as u8);
     }
+
     fn write8(&mut self, addr: u32, value: u8) {
-        match addr {
-            a if a >= IO_BASE && a < IO_BASE + 0x400 => {
-                self.io.write8(a, value);
+        match addr >> 24 {
+            0x00 => {}
+            0x02 => {
+                let off = ((addr - EWRAM_BASE) as usize) % EWRAM_SIZE;
+                self.mem.ewram[off] = value;
             }
-            a if a >= PALETTE_BASE && a < PALETTE_BASE + 0x400 => {
+            0x03 => {
+                let off = ((addr - IWRAM_BASE) as usize) % IWRAM_SIZE;
+                self.mem.iwram[off] = value;
+            }
+            0x04 => {
+                if addr < IO_BASE + 0x400 {
+                    self.io.write8(addr, value);
+                }
+            }
+            0x05 => {
                 if !self.check_palette_access() {
                     return;
                 }
-                let off = ((a - PALETTE_BASE) as usize) % PALETTE_SIZE;
+                let off = ((addr - PALETTE_BASE) as usize) % PALETTE_SIZE;
                 self.mem.palette[off] = value;
             }
-            a if a >= VRAM_BASE && a < VRAM_BASE + 0x18000 => {
+            0x06 => {
                 if !self.check_vram_access() {
                     return;
                 }
-                let off = ((a - VRAM_BASE) as usize) % VRAM_SIZE;
+                let raw_off = (addr - VRAM_BASE) as usize;
+                let off = if raw_off >= 0x18000 {
+                    0x10000 + ((raw_off - 0x10000) % 0x8000)
+                } else {
+                    raw_off % VRAM_SIZE
+                };
                 self.mem.vram[off] = value;
             }
-            a if a >= OAM_BASE && a < OAM_BASE + 0x400 => {
+            0x07 => {
                 if !self.check_oam_access() {
                     return;
                 }
-                let off = ((a - OAM_BASE) as usize) % OAM_SIZE;
+                let off = ((addr - OAM_BASE) as usize) % OAM_SIZE;
                 self.mem.oam[off] = value;
+            }
+            0x08..=0x0D => {}
+            0x0E | 0x0F => {
+                let off = ((addr - SRAM_BASE) as usize) % self.mem.sram.len();
+                self.mem.sram[off] = value;
             }
             _ => {}
         }
@@ -144,5 +239,19 @@ impl BusAccess for Bus {
 
     fn set_ppu_rendering(&mut self, rendering: bool) {
         Bus::set_ppu_rendering(self, rendering);
+    }
+}
+
+impl Bus {
+    fn read32_direct_bios(&self, addr: u32) -> u32 {
+        if addr as usize + 3 < self.mem.bios.len() {
+            let b0 = self.mem.bios[addr as usize] as u32;
+            let b1 = self.mem.bios[(addr + 1) as usize] as u32;
+            let b2 = self.mem.bios[(addr + 2) as usize] as u32;
+            let b3 = self.mem.bios[(addr + 3) as usize] as u32;
+            b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+        } else {
+            0
+        }
     }
 }

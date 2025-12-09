@@ -15,6 +15,45 @@ pub enum CpuMode {
     System,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum Exception {
+    Reset,
+    Undefined,
+    Swi,
+    PrefetchAbort,
+    DataAbort,
+    Irq,
+    Fiq,
+}
+
+impl Exception {
+    pub const fn vector(self) -> u32 {
+        match self {
+            Exception::Reset => 0x00,
+            Exception::Undefined => 0x04,
+            Exception::Swi => 0x08,
+            Exception::PrefetchAbort => 0x0C,
+            Exception::DataAbort => 0x10,
+            Exception::Irq => 0x18,
+            Exception::Fiq => 0x1C,
+        }
+    }
+
+    pub const fn target_mode(self) -> CpuMode {
+        match self {
+            Exception::Reset | Exception::Swi => CpuMode::Supervisor,
+            Exception::Undefined => CpuMode::Undefined,
+            Exception::PrefetchAbort | Exception::DataAbort => CpuMode::Abort,
+            Exception::Irq => CpuMode::Irq,
+            Exception::Fiq => CpuMode::Fiq,
+        }
+    }
+
+    pub const fn disables_fiq(self) -> bool {
+        matches!(self, Exception::Reset | Exception::Fiq)
+    }
+}
+
 impl CpuMode {
     fn from_bits(bits: u32) -> Self {
         match bits & 0x1F {
@@ -163,6 +202,50 @@ impl Cpu {
 
     pub fn spsr(&self) -> Option<u32> { self.spsr_for_mode(self.mode()) }
     pub fn set_spsr(&mut self, value: u32) { self.set_spsr_for_mode(self.mode(), value); }
+
+    pub fn enter_exception<B: BusAccess>(&mut self, bus: &mut B, exception: Exception) {
+        let old_cpsr = self.cpsr.raw();
+        let new_mode = exception.target_mode();
+
+        let lr_offset: u32 = match exception {
+            Exception::Reset => 0,
+            Exception::Swi | Exception::Undefined => {
+                if self.cpsr.t() { 2 } else { 4 }
+            }
+            Exception::PrefetchAbort | Exception::Irq | Exception::Fiq => 4,
+            Exception::DataAbort => 8,
+        };
+        let return_addr = self.pc().wrapping_add(lr_offset);
+
+        self.set_mode(new_mode);
+        self.set_spsr_for_mode(new_mode, old_cpsr);
+        self.regs[14] = return_addr;
+
+        self.cpsr.set_t(false);
+        self.cpsr.set_i(true);
+        if exception.disables_fiq() {
+            self.cpsr.set_f(true);
+        }
+
+        self.regs[15] = exception.vector();
+        self.flush_pipeline(bus);
+    }
+
+    pub fn trigger_irq<B: BusAccess>(&mut self, bus: &mut B) {
+        if !self.cpsr.i() {
+            self.enter_exception(bus, Exception::Irq);
+        }
+    }
+
+    pub fn trigger_fiq<B: BusAccess>(&mut self, bus: &mut B) {
+        if !self.cpsr.f() {
+            self.enter_exception(bus, Exception::Fiq);
+        }
+    }
+
+    pub fn reset<B: BusAccess>(&mut self, bus: &mut B) {
+        self.enter_exception(bus, Exception::Reset);
+    }
 
     pub fn set_mode(&mut self, new_mode: CpuMode) {
         let old_mode = self.mode();
@@ -573,6 +656,16 @@ impl Cpu {
     pub fn pc(&self) -> u32 { self.regs[15] }
     pub fn set_pc(&mut self, value: u32) { self.regs[15] = value; }
 
+    pub fn set_entry_point<B: BusAccess>(&mut self, bus: &mut B, addr: u32) {
+        let aligned = addr & !3;
+        self.regs[15] = aligned.wrapping_sub(4);
+        let decode = bus.read32(aligned);
+        let fetch = bus.read32(aligned.wrapping_add(4));
+        self.arm_pipe.decode = decode;
+        self.arm_pipe.fetch = fetch;
+        self.arm_pipe.valid = true;
+    }
+
     fn reset_pipeline<B: BusAccess>(&mut self, bus: &mut B) {
         match self.state() {
             CpuState::Arm => {
@@ -595,7 +688,10 @@ impl Cpu {
     }
 
     fn flush_pipeline<B: BusAccess>(&mut self, bus: &mut B) {
+        let target = self.pc();
+        self.regs[15] = target.wrapping_sub(4);
         self.reset_pipeline(bus);
+        self.regs[15] = target;
     }
 
     fn execute_arm_single_data_transfer<B: BusAccess>(&mut self, bus: &mut B, instr: u32) {
@@ -1414,11 +1510,11 @@ impl Cpu {
         }
     }
 
-    fn execute_thumb_software_interrupt(&mut self, instr: u32) {
-        // SWI - not implemented yet
-        let _ = instr;
+    fn execute_thumb_software_interrupt<B: BusAccess>(&mut self, bus: &mut B, _instr: u32) {
+        self.enter_exception(bus, Exception::Swi);
     }
 
+    #[allow(dead_code)]
     fn execute_thumb_unconditional_branch<B: BusAccess>(&mut self, _bus: &mut B, instr: u32) {
         let imm11 = instr & 0x7FF;
         let offset = ((imm11 as i16) << 5) >> 4; // Sign extend 11-bit to 16-bit, then to 32-bit
@@ -1427,6 +1523,7 @@ impl Cpu {
         // Pipeline flush will be handled by the step function
     }
 
+    #[allow(dead_code)]
     fn execute_thumb_long_branch_with_link<B: BusAccess>(&mut self, _bus: &mut B, instr: u32) {
         let h = (instr >> 11) & 0x1;
         let imm11 = instr & 0x7FF;
@@ -1452,84 +1549,59 @@ impl Cpu {
 
         match opcode {
             0x00..=0x07 => {
-                // Format 1: Move Shifted Register
                 self.execute_thumb_move_shifted_register(instr);
             }
             0x08..=0x0F => {
-                // Format 2: Add/Subtract
                 self.execute_thumb_add_subtract(instr);
             }
             0x10..=0x11 => {
-                // Format 3: Move/Compare/Add/Subtract Immediate
                 self.execute_thumb_move_compare_add_subtract_immediate(instr);
             }
             0x12..=0x13 => {
-                // Format 4: ALU Operations
                 self.execute_thumb_alu_operations(instr);
             }
             0x14..=0x15 => {
-                // Format 5: Hi Register Operations/Branch Exchange
                 self.execute_thumb_hi_register_operations_branch_exchange(instr);
             }
             0x16..=0x17 => {
-                // Format 6: PC-Relative Load
                 self.execute_thumb_pc_relative_load(bus, instr);
             }
             0x18..=0x19 => {
-                // Format 7: Load/Store with Register Offset
                 self.execute_thumb_load_store_register_offset(bus, instr);
             }
             0x1B => {
-                // Format 8: Load/Store Sign-Extended Byte/Halfword
-                self.execute_thumb_load_store_sign_extended(bus, instr);
+                let cond = (instr >> 8) & 0xF;
+                if cond == 0xF {
+                    self.execute_thumb_software_interrupt(bus, instr);
+                } else {
+                    self.execute_thumb_load_store_sign_extended(bus, instr);
+                }
             }
             0x1C..=0x1D => {
-                // Format 9: Load/Store with Immediate Offset
                 self.execute_thumb_load_store_immediate_offset(bus, instr);
             }
             0x1E..=0x1F => {
-                // Format 10: Load/Store Halfword
                 self.execute_thumb_load_store_halfword(bus, instr);
             }
             0x20..=0x21 => {
-                // Format 11: SP-Relative Load/Store
                 self.execute_thumb_sp_relative_load_store(bus, instr);
             }
             0x22..=0x23 => {
-                // Format 12: Load Address
                 self.execute_thumb_load_address(instr);
             }
             0x24..=0x25 => {
-                // Format 13: Add Offset to Stack Pointer
                 self.execute_thumb_add_offset_to_sp(instr);
             }
             0x26..=0x27 => {
-                // Format 14: Push/Pop Registers
                 self.execute_thumb_push_pop_registers(bus, instr);
             }
             0x28..=0x2F => {
-                // Format 15: Multiple Load/Store
                 self.execute_thumb_multiple_load_store(bus, instr);
             }
             0x1A => {
-                // Format 16: Conditional Branch
                 self.execute_thumb_conditional_branch(bus, instr);
             }
-            0x38..=0x3F => {
-                // Format 17: Software Interrupt
-                self.execute_thumb_software_interrupt(instr);
-            }
-            0x40..=0x47 => {
-                // Format 18: Unconditional Branch
-                self.execute_thumb_unconditional_branch(bus, instr);
-            }
-            0x48..=0x4F => {
-                // Format 19: Long Branch with Link
-                self.execute_thumb_long_branch_with_link(bus, instr);
-            }
-            _ => {
-                // Unknown instruction - should not happen with 5-bit opcode
-            }
+            _ => {}
         }
     }
 
@@ -1582,6 +1654,11 @@ impl Cpu {
                     }
                 } else if top3 == 0b010 {
                     self.execute_arm_single_data_transfer(bus, instr);
+                } else if (instr >> 24) & 0xF == 0xF {
+                    let cond = (instr >> 28) & 0xF;
+                    if self.condition_passed(cond) {
+                        self.enter_exception(bus, Exception::Swi);
+                    }
                 }
             }
             CpuState::Thumb => {
@@ -2141,7 +2218,6 @@ mod tests {
         let mul = (0xE << 28) | (1 << 20) | (2 << 16) | (1 << 8) | (1 << 7) | (1 << 4);
         // MLA r3, r0, r1, r2 (r3 = r0*r1 + r2), S=1 at 0x8
         let mla = (0xE << 28) | (1 << 21) | (1 << 20) | (3 << 16) | (2 << 12) | (1 << 8) | (1 << 7) | (1 << 4);
-        // Write both before first step to populate pipeline correctly
         write32_le(&mut bus.mem, 4, mul);
         write32_le(&mut bus.mem, 8, mla);
         cpu.set_pc(0);
@@ -2678,5 +2754,193 @@ mod tests {
         cpu.step(&mut bus);
         // PC should have changed due to branch (pipeline flush verified by PC change)
         assert_ne!(cpu.pc(), pc_before_branch.wrapping_add(4));
+    }
+
+    #[test]
+    fn exception_vector_addresses() {
+        assert_eq!(Exception::Reset.vector(), 0x00);
+        assert_eq!(Exception::Undefined.vector(), 0x04);
+        assert_eq!(Exception::Swi.vector(), 0x08);
+        assert_eq!(Exception::PrefetchAbort.vector(), 0x0C);
+        assert_eq!(Exception::DataAbort.vector(), 0x10);
+        assert_eq!(Exception::Irq.vector(), 0x18);
+        assert_eq!(Exception::Fiq.vector(), 0x1C);
+    }
+
+    #[test]
+    fn exception_target_modes() {
+        assert_eq!(Exception::Reset.target_mode(), CpuMode::Supervisor);
+        assert_eq!(Exception::Swi.target_mode(), CpuMode::Supervisor);
+        assert_eq!(Exception::Undefined.target_mode(), CpuMode::Undefined);
+        assert_eq!(Exception::PrefetchAbort.target_mode(), CpuMode::Abort);
+        assert_eq!(Exception::DataAbort.target_mode(), CpuMode::Abort);
+        assert_eq!(Exception::Irq.target_mode(), CpuMode::Irq);
+        assert_eq!(Exception::Fiq.target_mode(), CpuMode::Fiq);
+    }
+
+    #[test]
+    fn arm_swi_enters_supervisor_mode() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_mode(CpuMode::System);
+        cpu.set_pc(0x100);
+        let swi = (0xE << 28) | (0xF << 24) | 0x12;
+        write32_le(&mut bus.mem, 0x104, swi);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.mode(), CpuMode::Supervisor);
+        assert_eq!(cpu.pc(), Exception::Swi.vector());
+        assert_eq!(cpu.state(), CpuState::Arm);
+        assert!(cpu.cpsr().i());
+    }
+
+    #[test]
+    fn arm_swi_saves_cpsr_to_spsr() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_mode(CpuMode::System);
+        cpu.cpsr_mut().set_n(true);
+        cpu.cpsr_mut().set_z(true);
+        let original_cpsr = cpu.cpsr().raw();
+
+        cpu.set_pc(0x100);
+        let swi = (0xE << 28) | (0xF << 24) | 0x00;
+        write32_le(&mut bus.mem, 0x104, swi);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.spsr(), Some(original_cpsr));
+    }
+
+    #[test]
+    fn arm_swi_sets_lr_to_next_instruction() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.set_pc(0x100);
+        let swi = (0xE << 28) | (0xF << 24) | 0x00;
+        write32_le(&mut bus.mem, 0x104, swi);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(14), 0x108);
+    }
+
+    #[test]
+    fn thumb_swi_enters_supervisor_mode() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_state(CpuState::Thumb);
+        cpu.cpsr_mut().set_mode(CpuMode::System);
+        cpu.set_pc(0x100);
+        let swi: u16 = 0xDF12;
+        bus.write16(0x100, swi);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.mode(), CpuMode::Supervisor);
+        assert_eq!(cpu.pc(), Exception::Swi.vector());
+        assert_eq!(cpu.state(), CpuState::Arm);
+        assert!(cpu.cpsr().i());
+    }
+
+    #[test]
+    fn thumb_swi_sets_lr_correctly() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_state(CpuState::Thumb);
+        cpu.set_pc(0x100);
+        let swi: u16 = 0xDF00;
+        bus.write16(0x100, swi);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(14), 0x104);
+    }
+
+    #[test]
+    fn irq_trigger_when_enabled() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_i(false);
+        cpu.set_pc(0x100);
+
+        cpu.trigger_irq(&mut bus);
+        assert_eq!(cpu.mode(), CpuMode::Irq);
+        assert_eq!(cpu.pc(), Exception::Irq.vector());
+        assert!(cpu.cpsr().i());
+        assert!(!cpu.cpsr().f());
+    }
+
+    #[test]
+    fn irq_not_triggered_when_disabled() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_i(true);
+        cpu.set_pc(0x100);
+
+        cpu.trigger_irq(&mut bus);
+        assert_eq!(cpu.mode(), CpuMode::System);
+        assert_eq!(cpu.pc(), 0x100);
+    }
+
+    #[test]
+    fn fiq_trigger_when_enabled() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_f(false);
+        cpu.set_pc(0x100);
+
+        cpu.trigger_fiq(&mut bus);
+        assert_eq!(cpu.mode(), CpuMode::Fiq);
+        assert_eq!(cpu.pc(), Exception::Fiq.vector());
+        assert!(cpu.cpsr().i());
+        assert!(cpu.cpsr().f());
+    }
+
+    #[test]
+    fn fiq_not_triggered_when_disabled() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_f(true);
+        cpu.set_pc(0x100);
+
+        cpu.trigger_fiq(&mut bus);
+        assert_eq!(cpu.mode(), CpuMode::System);
+        assert_eq!(cpu.pc(), 0x100);
+    }
+
+    #[test]
+    fn reset_enters_supervisor_mode() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_mode(CpuMode::User);
+        cpu.set_pc(0x1000);
+
+        cpu.reset(&mut bus);
+        assert_eq!(cpu.mode(), CpuMode::Supervisor);
+        assert_eq!(cpu.pc(), Exception::Reset.vector());
+        assert!(cpu.cpsr().i());
+        assert!(cpu.cpsr().f());
+    }
+
+    #[test]
+    fn conditional_swi_not_executed() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new(256);
+
+        cpu.cpsr_mut().set_z(false);
+        cpu.set_pc(0x100);
+        let swi = (0x0 << 28) | (0xF << 24) | 0x00;
+        write32_le(&mut bus.mem, 0x104, swi);
+
+        cpu.step(&mut bus);
+        assert_eq!(cpu.mode(), CpuMode::System);
+        assert_eq!(cpu.pc(), 0x104);
     }
 }
